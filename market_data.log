@@ -1,0 +1,33 @@
+2024-12-25 15:04:11,448 - database_manager - INFO - Database setup completed successfully
+2024-12-25 15:04:11,449 - visualization - INFO - Created chart save directory: chart_images
+2024-12-25 15:04:11,887 - visualization - INFO - Started auto-save with 2 hour interval
+2024-12-25 15:05:34,953 - visualization - INFO - Saving final chart before shutdown...
+2024-12-25 15:05:36,456 - visualization - INFO - Saved chart at 2024-12-25 15:05:34: chart_images\market_chart_final_20241225_150534.png
+2024-12-25 15:05:36,457 - visualization - INFO - Image resolution: 7200x4800 pixels
+2024-12-25 15:05:36,472 - visualization - INFO - Application shutdown completed
+2024-12-25 15:07:30,284 - __main__ - INFO - Received signal 2, initiating shutdown...
+2024-12-25 15:07:30,284 - __main__ - INFO - Shutting down application...
+2024-12-25 15:07:30,328 - __main__ - ERROR - Error in main: Event loop stopped before Future completed.
+2024-12-25 15:07:30,328 - __main__ - ERROR - Error closing event loop: There is no current event loop in thread 'MainThread'.
+2024-12-25 15:07:36,543 - database_manager - INFO - Database setup completed successfully
+2024-12-25 15:07:36,543 - visualization - INFO - Created chart save directory: chart_images
+2024-12-25 15:07:36,695 - visualization - INFO - Started auto-save with 2 hour interval
+2024-12-25 15:08:39,887 - visualization - INFO - Saving final chart before shutdown...
+2024-12-25 15:08:41,468 - visualization - INFO - Saved chart at 2024-12-25 15:08:39: chart_images\market_chart_final_20241225_150839.png
+2024-12-25 15:08:41,468 - visualization - INFO - Image resolution: 7200x4800 pixels
+2024-12-25 15:08:41,480 - visualization - INFO - Application shutdown completed
+2024-12-25 15:08:42,659 - __main__ - INFO - Received signal 2, initiating shutdown...
+2024-12-25 15:08:42,690 - __main__ - INFO - Shutting down application...
+2024-12-25 15:08:42,735 - __main__ - ERROR - Error in main: Event loop stopped before Future completed.
+2024-12-25 15:08:42,735 - __main__ - ERROR - Error closing event loop: There is no current event loop in thread 'MainThread'.
+2024-12-25 15:19:16,431 - database_manager - INFO - Database setup completed successfully
+2024-12-25 15:19:16,432 - visualization - INFO - Created chart save directory: chart_images
+2024-12-25 15:19:16,597 - visualization - INFO - Started auto-save with 2 hour interval
+2024-12-25 15:19:33,864 - visualization - INFO - Saving final chart before shutdown...
+2024-12-25 15:19:35,334 - visualization - INFO - Saved chart at 2024-12-25 15:19:33: chart_images\market_chart_final_20241225_151933.png
+2024-12-25 15:19:35,334 - visualization - INFO - Image resolution: 7200x4800 pixels
+2024-12-25 15:19:35,349 - visualization - INFO - Application shutdown completed
+2024-12-25 15:19:39,020 - __main__ - INFO - Received signal 2, initiating shutdown...
+2024-12-25 15:19:39,090 - __main__ - INFO - Shutting down application...
+2024-12-25 15:19:39,159 - __main__ - ERROR - Error in main: Event loop stopped before Future completed.
+2024-12-25 15:19:39,160 - __main__ - ERROR - Error closing event loop: There is no current event loop in thread 'MainThread'.
