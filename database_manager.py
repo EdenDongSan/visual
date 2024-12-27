@@ -1,12 +1,12 @@
 import mysql.connector
 from mysql.connector import pooling
-import logging
-import os
-from typing import List, Dict, Optional, Union
 from dataclasses import dataclass
 from datetime import datetime
-import time
 import threading
+import logging
+import time
+import os
+from typing import List, Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,6 @@ class DatabaseManager:
             self.initialized = True
     
     def setup_database(self):
-        """Database connection pool and table setup"""
         try:
             dbconfig = {
                 "host": os.getenv('MYSQL_HOST'),
@@ -64,11 +63,9 @@ class DatabaseManager:
             raise
     
     def _setup_tables(self):
-        """Set up database tables"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             try:
-                # Create tables with optimized indexes
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS kline_1m (
                         timestamp BIGINT PRIMARY KEY,
@@ -94,7 +91,6 @@ class DatabaseManager:
                     )
                 """)
                 
-                # Add data retention procedure
                 cursor.execute("""
                     CREATE EVENT IF NOT EXISTS cleanup_old_data
                     ON SCHEDULE EVERY 1 DAY
@@ -116,7 +112,6 @@ class DatabaseManager:
                 cursor.close()
     
     def get_connection(self):
-        """Get connection from pool with retry mechanism"""
         max_retries = 3
         retry_delay = 1
         
@@ -131,7 +126,6 @@ class DatabaseManager:
                 time.sleep(retry_delay * (2 ** attempt))
     
     def execute_with_retry(self, operation: callable, *args, **kwargs):
-        """Execute database operation with retry mechanism"""
         max_retries = 3
         retry_delay = 1
         
@@ -156,7 +150,6 @@ class DatabaseManager:
                 time.sleep(retry_delay * (2 ** attempt))
     
     def store_candle(self, candle: Candle):
-        """Store candle data with retry mechanism"""
         def _store_candle(cursor, candle):
             cursor.execute("""
                 INSERT INTO kline_1m 
@@ -184,7 +177,6 @@ class DatabaseManager:
     
     def store_long_short_ratio(self, timestamp: int, long_ratio: float, 
                              short_ratio: float, long_short_ratio: float):
-        """Store long/short ratio data with retry mechanism"""
         def _store_ratio(cursor, *args):
             cursor.execute("""
                 INSERT INTO long_short_ratio 
@@ -204,7 +196,6 @@ class DatabaseManager:
             raise
     
     def get_recent_candles(self, limit: int = 200) -> List[Candle]:
-        """Get recent candle data with retry mechanism"""
         def _get_candles(cursor, limit):
             cursor.execute("""
                 SELECT timestamp, open, high, low, close, volume, quote_volume
@@ -234,7 +225,6 @@ class DatabaseManager:
             return []
     
     def get_recent_ratio(self, limit: int = 200) -> List[Dict]:
-        """Get recent long/short ratio data with retry mechanism"""
         def _get_ratios(cursor, limit):
             cursor.execute("""
                 SELECT timestamp, long_ratio, short_ratio, long_short_ratio
@@ -252,16 +242,15 @@ class DatabaseManager:
                     'long_short_ratio': float(row[3])
                 }
                 for row in rows
-            ][::-1]  # Reverse for chronological order
+            ][::-1]
         
         try:
             return self.execute_with_retry(_get_ratios, limit)
         except Exception as e:
             logger.error(f"Error fetching recent ratios: {e}")
             return []
-    
+
     def cleanup_old_data(self, days: int = 30):
-        """Manual cleanup of old data"""
         def _cleanup(cursor, days):
             cursor.execute("""
                 DELETE FROM kline_1m 

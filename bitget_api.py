@@ -20,36 +20,32 @@ class BitgetAPI:
         self.BASE_URL = "https://api.bitget.com"
         self.session = None
         self.max_retries = 3
-        self.retry_delay = 1  # Initial retry delay in seconds
-        self.rate_limit_tokens = 10  # Rate limit token bucket
+        self.retry_delay = 1
+        self.rate_limit_tokens = 10
         self.rate_limit_last_update = time.time()
         self.rate_limit_lock = asyncio.Lock()
     
     async def __aenter__(self):
-        """Context manager entry"""
         if not self.session:
             timeout = aiohttp.ClientTimeout(total=30, connect=10)
             self.session = aiohttp.ClientSession(timeout=timeout)
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit"""
         await self.close()
 
     async def close(self):
-        """Explicit session closure method"""
         if self.session:
             await self.session.close()
             self.session = None
 
     async def _wait_for_rate_limit(self):
-        """Rate limiting using token bucket algorithm"""
         async with self.rate_limit_lock:
             current_time = time.time()
             time_passed = current_time - self.rate_limit_last_update
             self.rate_limit_tokens = min(
-                10,  # Max tokens
-                self.rate_limit_tokens + time_passed * 2  # Token regeneration rate
+                10,
+                self.rate_limit_tokens + time_passed * 2
             )
             
             if self.rate_limit_tokens < 1:
@@ -62,7 +58,6 @@ class BitgetAPI:
     
     def _generate_signature(self, timestamp: str, method: str, 
                           request_path: str, body: str = '') -> str:
-        """Generate API request signature"""
         message = timestamp + method.upper() + request_path + body
         mac = hmac.new(
             bytes(self.SECRET_KEY, encoding='utf8'),
@@ -72,10 +67,8 @@ class BitgetAPI:
         return base64.b64encode(mac.digest()).decode()
     
     def _create_headers(self, method: str, request_path: str, body: str = '') -> dict:
-        """Create API request headers"""
         timestamp = str(int(time.time() * 1000))
         
-        # Sort query parameters
         if '?' in request_path:
             base_path, query = request_path.split('?', 1)
             params = sorted(query.split('&'))
@@ -94,7 +87,6 @@ class BitgetAPI:
     
     async def _request(self, method: str, endpoint: str, 
                       params: dict = None, retry_count: int = 0) -> Optional[dict]:
-        """Integrated API request handling with retry mechanism"""
         if self.session is None:
             timeout = aiohttp.ClientTimeout(total=30, connect=10)
             self.session = aiohttp.ClientSession(timeout=timeout)
@@ -118,7 +110,7 @@ class BitgetAPI:
             ) as response:
                 response_data = await response.json()
                 
-                if response.status == 429:  # Rate limit exceeded
+                if response.status == 429:
                     if retry_count < self.max_retries:
                         wait_time = (2 ** retry_count) * self.retry_delay
                         await asyncio.sleep(wait_time)
@@ -148,10 +140,9 @@ class BitgetAPI:
                 await asyncio.sleep(wait_time)
                 return await self._request(method, endpoint, params, retry_count + 1)
             return None
-    
+
     async def get_position_ratio(self, symbol: str = 'BTCUSDT',
                                period: str = '1m') -> Optional[Dict]:
-        """Get position long/short ratio with retry mechanism"""
         try:
             params = {
                 'symbol': symbol,
@@ -185,6 +176,44 @@ class BitgetAPI:
             
         except Exception as e:
             logger.error(f"Error fetching position ratio: {e}")
+            return {
+                'timestamp': int(time.time() * 1000),
+                'success': False,
+                'error': str(e)
+            }
+        
+    async def get_ticker(self, symbol: str = 'BTCUSDT', 
+                        product_type: str = 'USDT-FUTURES') -> Optional[Dict]:
+        try:
+            params = {
+                'symbol': symbol,
+                'productType': product_type
+            }
+            
+            response = await self._request(
+                'GET',
+                '/api/v2/mix/market/ticker',
+                params=params
+            )
+            
+            if response and response.get('code') == '00000':
+                data = response.get('data', [])
+                if data:
+                    return {
+                        'timestamp': int(time.time() * 1000),
+                        'ticker_data': data[0],
+                        'success': True
+                    }
+            
+            logger.error(f"Failed to get ticker: {response}")
+            return {
+                'timestamp': int(time.time() * 1000),
+                'success': False,
+                'error': str(response)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching ticker: {e}")
             return {
                 'timestamp': int(time.time() * 1000),
                 'success': False,

@@ -51,16 +51,17 @@ class Application:
                 return
                 
             recent_data = self.market_data.get_recent_data()
-            await self.visualization.update_charts(
-                candles=recent_data['candles'],
-                ratio_data=recent_data['ratios']
-            )
+            await self.visualization.update_data(recent_data)
             
-            correlation = self.visualization.calculate_correlation(
-                recent_data['candles'],
-                recent_data['ratios']
-            )
-            logger.info(f"Price-Ratio Correlation: {correlation:.3f}")
+            # Get trend probabilities
+            candles = recent_data['candles']
+            ratios = recent_data['ratios']
+            if candles and ratios:
+                trend_analysis = self.visualization.calculate_trend_probabilities(
+                    candles,
+                    ratios
+                )
+                logger.debug(f"Trend analysis: {trend_analysis}")
             
         except Exception as e:
             logger.error(f"Error updating visualization: {e}")
@@ -68,20 +69,20 @@ class Application:
     async def run(self):
         """Main application loop with improved error handling"""
         try:
-            # Register callback
             self.market_data.add_callback(self.update_visualization)
-            
-            # Start market data collection
             market_data_task = asyncio.create_task(self.market_data.run())
             
-            # Wait for shutdown signal
+            # Wait for termination signal
             while self.should_run:
                 await asyncio.sleep(0.1)
             
-            # Cleanup
+            # Graceful shutdown sequence
             logger.info("Shutting down application...")
             self.market_data.stop()
+            
+            # Wait for visualization cleanup
             await self.visualization.close()
+            await asyncio.sleep(1)  # Allow time for cleanup
             
             # Cancel market data task
             market_data_task.cancel()
@@ -89,13 +90,13 @@ class Application:
                 await market_data_task
             except asyncio.CancelledError:
                 pass
-            
+                
         except Exception as e:
             logger.error(f"Application error: {e}")
         finally:
-            # Ensure cleanup
-            self.market_data.stop()
-            await self.visualization.close()
+            # Ensure visualization is closed
+            if not self.visualization.is_shutting_down:
+                await self.visualization.close()
 
 async def main():
     """Application entry point with error handling"""
@@ -124,7 +125,7 @@ async def main():
     except Exception as e:
         logger.error(f"Fatal application error: {e}")
     finally:
-        # Cleanup any remaining tasks
+        # Cleanup remaining tasks
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         for task in tasks:
             task.cancel()

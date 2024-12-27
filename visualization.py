@@ -14,37 +14,34 @@ import queue
 import threading
 import os
 import matplotlib.ticker as ticker
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 class MarketDataVisualization:
     def __init__(self, max_points: int = 1000):
-        """
-        시장 데이터 시각화 클래스 초기화
-        
-        Args:
-            max_points (int): 차트에 표시할 최대 데이터 포인트 수
-        """
         self.max_points = max_points
         self.update_queue = queue.Queue()
         self.data_lock = threading.Lock()
         
-        # 자동 저장 설정
+        # Data stores
+        self.price_data = []
+        self.times_data = []
+        self.ratio_data = []
+        self.volume_data = []
+        
+        # GUI update control
+        self.last_update = time.time()
+        self.update_interval = 0.5  # Reduced to 500ms
+        
+        # Auto-save settings
         self.auto_save = True
-        self.save_interval_hours = 2  # 2시간 간격
+        self.save_interval_hours = 2
         self.last_save_time = time.time()
         self.save_folder = "chart_images"
         self.is_shutting_down = False
         
-        # 데이터 저장소
-        self.candle_data = []
-        self.ratio_data = []
-        
-        # GUI 업데이트 제어
-        self.last_update = time.time()
-        self.update_interval = 1.0
-        
-        # 저장 폴더 생성
+        # Create save folder
         os.makedirs(self.save_folder, exist_ok=True)
         logger.info(f"Created chart save directory: {self.save_folder}")
         
@@ -52,26 +49,26 @@ class MarketDataVisualization:
         self._start_auto_save()
     
     def _setup_gui_thread(self):
-        """GUI 스레드 설정 및 시작"""
+        """Set up and start GUI thread"""
         self.gui_thread = threading.Thread(target=self._run_gui, daemon=True)
         self.gui_ready = threading.Event()
         self.gui_thread.start()
         self.gui_ready.wait()
     
     def _start_auto_save(self):
-        """자동 저장 스레드 시작"""
+        """Start auto-save thread"""
         save_thread = threading.Thread(target=self._auto_save_loop, daemon=True)
         save_thread.start()
         logger.info(f"Started auto-save with {self.save_interval_hours} hour interval")
     
     def _run_gui(self):
-        """GUI 스레드 메인 루프"""
+        """Main GUI thread loop"""
         try:
             self.root = tk.Tk()
             self.root.title("Bitget Market Data Visualization")
             self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
             
-            # 윈도우 크기 및 위치 설정
+            # Window size and position
             screen_width = self.root.winfo_screenwidth()
             screen_height = self.root.winfo_screenheight()
             window_width = 1200
@@ -81,15 +78,15 @@ class MarketDataVisualization:
             self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
             
             self._setup_gui()
-            self.initialize_charts()
+            self.initialize_chart()
             
-            # GUI 준비 완료 시그널
+            # GUI ready signal
             self.gui_ready.set()
             
-            # 업데이트 처리 시작
+            # Start update processing
             self.root.after(100, self._process_update_queue)
             
-            # GUI 이벤트 루프 시작
+            # Start GUI event loop
             self.root.mainloop()
             
         except Exception as e:
@@ -97,40 +94,28 @@ class MarketDataVisualization:
             self.gui_ready.set()
     
     def _setup_gui(self):
-        """GUI 컴포넌트 설정"""
-        # 메인 프레임
+        """Set up GUI components"""
+        # Main frame
         self.main_frame = ttk.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # 스타일 설정
+        # Style setup
         style = ttk.Style()
         style.configure('Custom.TFrame', background='#f0f0f0')
         
-        # 차트 설정
+        # Chart setup
         self.fig = Figure(figsize=(12, 8), dpi=100)
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.main_frame)
         self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
-        # 서브플롯 설정
-        self.fig.subplots_adjust(hspace=0.3)
-        self.ax1 = self.fig.add_subplot(211)
-        self.ax2 = self.fig.add_subplot(212)
-        
-        # 정보 프레임
+        # Info frame
         self.info_frame = ttk.Frame(self.main_frame, style='Custom.TFrame')
         self.info_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        # 레이블 스타일
+        # Label style
         label_style = {'font': ('Helvetica', 10), 'padding': 5}
         
-        # 레이블 추가
-        self.correlation_label = ttk.Label(
-            self.info_frame,
-            text="상관계수: N/A",
-            **label_style
-        )
-        self.correlation_label.pack(side=tk.LEFT, padx=5)
-        
+        # Labels
         self.price_label = ttk.Label(
             self.info_frame,
             text="현재가: N/A",
@@ -145,7 +130,14 @@ class MarketDataVisualization:
         )
         self.ratio_label.pack(side=tk.LEFT, padx=5)
         
-        # 프로그레스 바
+        self.volume_label = ttk.Label(
+            self.info_frame,
+            text="거래량: N/A",
+            **label_style
+        )
+        self.volume_label.pack(side=tk.LEFT, padx=5)
+        
+        # Progress bar
         self.progress = ttk.Progressbar(
             self.info_frame,
             mode='indeterminate',
@@ -153,37 +145,35 @@ class MarketDataVisualization:
         )
         self.progress.pack(side=tk.RIGHT, padx=5)
     
-    def initialize_charts(self):
-        """차트 초기 설정"""
-        # 캔들스틱 차트 설정
-        self.ax1.set_title('BTCUSDT Price', pad=20, fontsize=12, fontweight='bold')
-        self.ax1.grid(True, linestyle='--', alpha=0.7)
-        self.ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-        self.ax1.tick_params(axis='both', labelsize=10)
+    def initialize_chart(self):
+        """Initialize chart layout"""
+        self.ax1 = self.fig.add_subplot(111)  # Single chart
         
-        # 롱숏 비율 차트 설정
-        self.ax2.set_title('Long/Short Ratio', pad=20, fontsize=12, fontweight='bold')
-        self.ax2.grid(True, linestyle='--', alpha=0.7)
-        self.ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-        self.ax2.tick_params(axis='both', labelsize=10)
+        # Price axis (left)
+        self.ax1.set_ylabel('Price (USDT)', color='black')
+        self.ax1.tick_params(axis='y', labelcolor='black')
         
-        # 레이블 설정
-        self.ax1.set_ylabel('Price (USDT)', fontsize=10)
-        self.ax2.set_ylabel('Ratio (%)', fontsize=10)
+        # Long/Short ratio axis (right)
+        self.ax2 = self.ax1.twinx()
+        self.ax2.set_ylabel('Long/Short Ratio (%)', color='blue')
+        self.ax2.tick_params(axis='y', labelcolor='blue')
+        
+        # Volume axis (right, offset)
+        self.ax3 = self.ax1.twinx()
+        self.ax3.spines['right'].set_position(('outward', 60))
+        self.ax3.set_ylabel('Volume', color='gray')
+        self.ax3.tick_params(axis='y', labelcolor='gray')
         
         self.fig.tight_layout()
     
     def _process_update_queue(self):
-        """업데이트 큐 처리"""
+        """Process update queue"""
         try:
             current_time = time.time()
             if current_time - self.last_update >= self.update_interval:
                 while not self.update_queue.empty():
-                    update_data = self.update_queue.get_nowait()
-                    self._do_update_charts(
-                        update_data['candles'],
-                        update_data['ratio_data']
-                    )
+                    data = self.update_queue.get_nowait()
+                    self._update_chart(data)
                 self.last_update = current_time
         except Exception as e:
             logger.error(f"Error processing update queue: {e}")
@@ -192,7 +182,7 @@ class MarketDataVisualization:
                 self.root.after(100, self._process_update_queue)
     
     def _auto_save_loop(self):
-        """자동 저장 루프"""
+        """Auto-save loop"""
         while self.auto_save and not self.is_shutting_down:
             try:
                 current_time = time.time()
@@ -202,220 +192,259 @@ class MarketDataVisualization:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     filename = os.path.join(self.save_folder, f"market_chart_{timestamp}")
                     self.save_chart(filename)
-                    
             except Exception as e:
                 logger.error(f"Error in auto save loop: {e}")
             
-            # 1분마다 체크
-            time.sleep(60)
+            time.sleep(60)  # Check every minute
+    
+    def _update_chart(self, data):
+        """Update chart with new data"""
+        with self.data_lock:
+            try:
+                if 'candles' in data:
+                    # Handle candles data
+                    candles = data['candles']
+                    if not candles:
+                        return
+                    
+                    # Convert timestamps and extract data
+                    self.times_data = [datetime.fromtimestamp(candle.timestamp/1000) for candle in candles]
+                    self.price_data = [candle.close for candle in candles]
+                    self.volume_data = [candle.volume for candle in candles]
+                    
+                    # Get latest values for labels
+                    latest_price = self.price_data[-1] if self.price_data else 0
+                    latest_volume = self.volume_data[-1] if self.volume_data else 0
+                    
+                    # Get ratio data if available
+                    if 'ratios' in data:
+                        ratios = data['ratios']
+                        if ratios:
+                            self.ratio_data = [ratio['long_short_ratio'] for ratio in ratios]
+                            latest_ratio = self.ratio_data[-1] if self.ratio_data else 0
+                            self.ratio_label.configure(text=f"롱/숏 비율: {latest_ratio:.2f}")
+                    
+                    # Maintain max points
+                    if len(self.times_data) > self.max_points:
+                        self.times_data = self.times_data[-self.max_points:]
+                        self.price_data = self.price_data[-self.max_points:]
+                        self.volume_data = self.volume_data[-self.max_points:]
+                        if self.ratio_data:
+                            self.ratio_data = self.ratio_data[-self.max_points:]
+                    
+                    # Clear charts
+                    self.ax1.clear()
+                    self.ax2.clear()
+                    self.ax3.clear()
+                    
+                    # Draw price line
+                    self.ax1.plot(self.times_data, self.price_data, 'black', linewidth=1.5)
+                    
+                    # Draw volume bars
+                    self.ax3.bar(self.times_data, self.volume_data, alpha=0.3, color='gray')
+                    
+                    # Draw ratio line if available
+                    if self.ratio_data and len(self.ratio_data) == len(self.times_data):
+                        self.ax2.plot(self.times_data, self.ratio_data, 'blue', linewidth=1.5)
+                    
+                    # Set axes
+                    self.ax1.set_xlabel('Time')
+                    self.ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                    self.ax1.tick_params(axis='x', rotation=45)
+                    
+                    # Update labels
+                    self.price_label.configure(text=f"현재가: {latest_price:,.2f}")
+                    self.volume_label.configure(text=f"거래량: {latest_volume:,.2f}")
+                    
+                    # Chart refresh
+                    self.fig.tight_layout()
+                    self.canvas.draw_idle()
+                
+            except Exception as e:
+                logger.error(f"Error updating chart: {e}")
     
     def save_chart(self, filename: str, dpi: int = 300, format: str = 'png'):
-        """차트를 고해상도 이미지로 저장"""
+        """Save chart as high-resolution image"""
         try:
             with self.data_lock:
-                current_time = datetime.now()
-                hours_since_last_save = (time.time() - self.last_save_time) / 3600
+                original_size = self.fig.get_size_inches()
+                self.fig.set_size_inches(24, 16)
                 
-                if self.is_shutting_down or hours_since_last_save >= self.save_interval_hours:
-                    original_size = self.fig.get_size_inches()
-                    self.fig.set_size_inches(24, 16)
-                    
-                    save_path = f"{filename}.{format}"
-                    
-                    self.fig.tight_layout()
-                    self.fig.savefig(
-                        save_path,
-                        dpi=dpi,
-                        format=format,
-                        bbox_inches='tight',
-                        pad_inches=0.5
-                    )
-                    
-                    self.fig.set_size_inches(*original_size)
-                    
-                    width_pixels = int(24 * dpi)
-                    height_pixels = int(16 * dpi)
-                    
-                    save_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
-                    logger.info(f"Saved chart at {save_time}: {save_path}")
-                    logger.info(f"Image resolution: {width_pixels}x{height_pixels} pixels")
-                    
-                    self.last_save_time = time.time()
-                    
+                save_path = f"{filename}.{format}"
+                
+                self.fig.tight_layout()
+                self.fig.savefig(
+                    save_path,
+                    dpi=dpi,
+                    format=format,
+                    bbox_inches='tight',
+                    pad_inches=0.5
+                )
+                
+                self.fig.set_size_inches(*original_size)
+                logger.info(f"Saved chart: {save_path}")
+                self.last_save_time = time.time()
+                
         except Exception as e:
             logger.error(f"Error saving chart: {e}")
-            if self.is_shutting_down:
-                logger.error("Failed to save final chart during shutdown")
             raise
     
-    def _do_update_charts(self, candles: List[Candle], ratio_data: List[Dict]):
-        """차트 업데이트 수행"""
+    def calculate_trend_probabilities(self, candles: List[Candle], ratios: List[Dict], 
+                                window_size: int = 20, trend_threshold: float = 0.02) -> Dict:
+        """
+        Calculate trend continuation probabilities based on price and ratio patterns.
+        
+        Parameters:
+        - candles: List of Candle objects containing price data
+        - ratios: List of dictionaries containing long/short ratios
+        - window_size: Number of periods to consider for trend analysis
+        - trend_threshold: Minimum price change to consider as trend (2% default)
+        
+        Returns:
+        Dictionary containing probabilities for different scenarios
+        """
         try:
-            self.progress.start()
+            # Extract price and ratio data
+            prices = np.array([candle.close for candle in candles])
+            long_ratios = np.array([ratio['long_ratio'] for ratio in ratios])
+            short_ratios = np.array([ratio['short_ratio'] for ratio in ratios])
             
-            with self.data_lock:
-                # 데이터 다운샘플링
-                self.candle_data = self._downsample_data(candles, self.max_points)
-                self.ratio_data = self._downsample_data(ratio_data, self.max_points)
+            # Initialize results dictionary
+            results = {
+                'uptrend_long_increase': {'count': 0, 'continued': 0, 'probability': 0.0},
+                'uptrend_short_increase': {'count': 0, 'continued': 0, 'probability': 0.0},
+                'downtrend_long_increase': {'count': 0, 'continued': 0, 'probability': 0.0},
+                'downtrend_short_increase': {'count': 0, 'continued': 0, 'probability': 0.0}
+            }
+            
+            # Calculate rolling returns for trend identification
+            for i in range(len(prices) - window_size * 2):  # Need extra window for future returns
+                # Current window
+                current_window = prices[i:i+window_size]
+                current_return = (current_window[-1] / current_window[0]) - 1
                 
-                # 차트 업데이트
-                self._update_candle_chart(self.candle_data)
-                self._update_ratio_chart(self.ratio_data)
+                # Future window for continuation check
+                future_window = prices[i+window_size:i+window_size*2]
+                future_return = (future_window[-1] / future_window[0]) - 1
                 
-                # 상관관계 계산 및 표시
-                correlation = self.calculate_correlation(self.candle_data, self.ratio_data)
-                self.correlation_label.configure(text=f"상관계수: {correlation:.3f}")
+                # Ratio changes
+                ratio_window = window_size // 2  # Shorter window for ratio analysis
+                long_ratio_change = (long_ratios[i+window_size-1] / long_ratios[i+window_size-ratio_window]) - 1
+                short_ratio_change = (short_ratios[i+window_size-1] / short_ratios[i+window_size-ratio_window]) - 1
                 
-                # 레이아웃 조정 및 그리기
-                self.fig.tight_layout()
-                self.canvas.draw_idle()
+                # Analyze uptrend patterns
+                if current_return > trend_threshold:
+                    # Long ratio increasing in uptrend
+                    if long_ratio_change > 0:
+                        results['uptrend_long_increase']['count'] += 1
+                        if future_return > 0:  # Trend continued
+                            results['uptrend_long_increase']['continued'] += 1
+                    
+                    # Short ratio increasing in uptrend
+                    if short_ratio_change > 0:
+                        results['uptrend_short_increase']['count'] += 1
+                        if future_return > 0:
+                            results['uptrend_short_increase']['continued'] += 1
                 
-        except Exception as e:
-            logger.error(f"Error updating charts: {e}")
-        finally:
-            self.progress.stop()
-    
-    def _downsample_data(self, data: list, max_points: int) -> list:
-        """데이터 다운샘플링"""
-        if len(data) <= max_points:
-            return data
-        indices = np.linspace(0, len(data) - 1, max_points, dtype=int)
-        return [data[i] for i in indices]
-    
-    def _update_candle_chart(self, candles: List[Candle]):
-        self.ax1.clear()
-        self.ax1.grid(True, linestyle='--', alpha=0.7)
-        
-        if not candles:
-            return
-        
-        # 데이터 준비
-        timestamps = [datetime.fromtimestamp(c.timestamp/1000) for c in candles]
-        opens = [c.open for c in candles]
-        highs = [c.high for c in candles]
-        lows = [c.low for c in candles]
-        closes = [c.close for c in candles]
-        volumes = [c.volume for c in candles]
-        
-        # Y축 범위 설정
-        min_price = min(lows)
-        max_price = max(highs)
-        price_margin = (max_price - min_price) * 0.1  # 10% 마진
-        self.ax1.set_ylim(min_price - price_margin, max_price + price_margin)
-        
-        # 캔들스틱 그리기
-        width = 0.0005
-        colors = ['g' if close >= open else 'r' for open, close in zip(opens, closes)]
-        
-        self.ax1.bar(timestamps, np.array(highs) - np.array(lows),
-                    bottom=lows, width=width, color=colors, alpha=0.8)
-        self.ax1.bar(timestamps, np.array(closes) - np.array(opens),
-                    bottom=opens, width=width*1.5, color=colors)
-        
-        # 거래량 차트
-        volume_ax = self.ax1.twinx()
-        volume_ax.bar(timestamps, volumes, width=width*2, alpha=0.3, color='gray')
-        volume_ax.set_ylabel('Volume')
-        
-        # 차트 설정
-        self.ax1.set_title('BTCUSDT Price', pad=20)
-        self.ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-        self.ax1.tick_params(axis='x', rotation=45)
-        
-        # Y축 포맷팅 - 천 단위 구분자 추가
-        self.ax1.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, p: format(int(x), ',')))
-    
-    def _update_ratio_chart(self, ratio_data: List[Dict]):
-        """롱숏 비율 차트 업데이트"""
-        self.ax2.clear()
-        self.ax2.grid(True, linestyle='--', alpha=0.7)
-        
-        if not ratio_data:
-            return
-        
-        # 데이터 준비
-        ratio_times = [datetime.fromtimestamp(r['timestamp']/1000) for r in ratio_data]
-        long_ratios = [r['long_ratio'] for r in ratio_data]
-        short_ratios = [r['short_ratio'] for r in ratio_data]
-        
-        # 롱숏 비율 그래프 그리기
-        self.ax2.plot(ratio_times, long_ratios, 'g-', label='Long', linewidth=2)
-        self.ax2.plot(ratio_times, short_ratios, 'r-', label='Short', linewidth=2)
-        self.ax2.fill_between(ratio_times, long_ratios, alpha=0.3, color='g')
-        self.ax2.fill_between(ratio_times, short_ratios, alpha=0.3, color='r')
-        
-        # 차트 설정
-        self.ax2.set_title('Long/Short Ratio', pad=20)
-        self.ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-        self.ax2.tick_params(axis='x', rotation=45)
-        self.ax2.legend()
-        
-        # 최신 롱숏 비율 업데이트
-        if ratio_data:
-            latest_ratio = ratio_data[-1]
-            long_short_ratio = latest_ratio['long_short_ratio']
-            self.ratio_label.configure(text=f"롱/숏 비율: {long_short_ratio:.2f}")
-    
-    def calculate_correlation(self, candles: List[Candle], ratio_data: List[Dict]) -> float:
-        """가격과 롱숏비율의 상관관계 계산"""
-        try:
-            if not candles or not ratio_data:
-                return 0.0
+                # Analyze downtrend patterns
+                elif current_return < -trend_threshold:
+                    # Long ratio increasing in downtrend
+                    if long_ratio_change > 0:
+                        results['downtrend_long_increase']['count'] += 1
+                        if future_return < 0:  # Trend continued
+                            results['downtrend_long_increase']['continued'] += 1
+                    
+                    # Short ratio increasing in downtrend
+                    if short_ratio_change > 0:
+                        results['downtrend_short_increase']['count'] += 1
+                        if future_return < 0:
+                            results['downtrend_short_increase']['continued'] += 1
             
-            # 시계열 데이터 정렬
-            candle_times = np.array([c.timestamp for c in candles])
-            ratio_times = np.array([r['timestamp'] for r in ratio_data])
+            # Calculate probabilities
+            for scenario in results:
+                if results[scenario]['count'] > 0:
+                    results[scenario]['probability'] = (
+                        results[scenario]['continued'] / results[scenario]['count']
+                    )
             
-            # 같은 타임스탬프의 데이터만 사용
-            common_times = np.intersect1d(candle_times, ratio_times)
+            # Add current market state analysis
+            current_trend = self.analyze_current_market_state(prices, long_ratios, short_ratios, 
+                                                            window_size, trend_threshold)
+            results['current_market_state'] = current_trend
             
-            if len(common_times) < 2:
-                return 0.0
-            
-            # 공통 시간대의 데이터 추출
-            prices = []
-            ratios = []
-            
-            for t in common_times:
-                candle = next(c for c in candles if c.timestamp == t)
-                ratio = next(r for r in ratio_data if r['timestamp'] == t)
-                
-                prices.append(candle.close)
-                ratios.append(ratio['long_short_ratio'])
-            
-            # 상관계수 계산
-            return float(np.corrcoef(prices, ratios)[0, 1])
+            return results
             
         except Exception as e:
-            logger.error(f"Error calculating correlation: {e}")
-            return 0.0
-    
-    async def update_charts(self, candles: List[Candle], ratio_data: List[Dict]):
-        """비동기 차트 업데이트"""
+            logger.error(f"Error calculating trend probabilities: {e}")
+            return {}
+
+    def analyze_current_market_state(self, prices: np.ndarray, long_ratios: np.ndarray, 
+                                short_ratios: np.ndarray, window_size: int, 
+                                trend_threshold: float) -> Dict:
+        """
+        Analyze the current market state and identify active patterns.
+        """
         try:
-            if not self.is_shutting_down:
-                self.update_queue.put({
-                    'candles': candles,
-                    'ratio_data': ratio_data
-                })
+            # Calculate current trend
+            current_window = prices[-window_size:]
+            current_return = (current_window[-1] / current_window[0]) - 1
+            
+            # Calculate recent ratio changes
+            ratio_window = window_size // 2
+            long_ratio_change = (long_ratios[-1] / long_ratios[-ratio_window]) - 1
+            short_ratio_change = (short_ratios[-1] / short_ratios[-ratio_window]) - 1
+            
+            current_state = {
+                'trend': 'neutral',
+                'long_ratio_increasing': long_ratio_change > 0,
+                'short_ratio_increasing': short_ratio_change > 0,
+                'return': current_return,
+                'warning_level': 0  # 0: normal, 1: attention, 2: high risk
+            }
+            
+            # Classify current trend
+            if current_return > trend_threshold:
+                current_state['trend'] = 'uptrend'
+                if short_ratio_change > 0.05:  # Significant short increase during uptrend
+                    current_state['warning_level'] = 2
+                elif long_ratio_change < -0.05:  # Significant long decrease during uptrend
+                    current_state['warning_level'] = 1
+                    
+            elif current_return < -trend_threshold:
+                current_state['trend'] = 'downtrend'
+                if long_ratio_change > 0.05:  # Significant long increase during downtrend
+                    current_state['warning_level'] = 2
+                elif short_ratio_change < -0.05:  # Significant short decrease during downtrend
+                    current_state['warning_level'] = 1
+            
+            return current_state
+            
         except Exception as e:
-            logger.error(f"Error queuing chart update: {e}")
+            logger.error(f"Error analyzing current market state: {e}")
+            return {}
+        
+    async def update_data(self, ticker_data):
+        """Async data update"""
+        try:
+            self.update_queue.put(ticker_data)
+        except Exception as e:
+            logger.error(f"Error queuing data update: {e}")
     
     def _on_closing(self):
-        """GUI 종료 처리"""
+        """Handle GUI closure"""
         try:
             self.is_shutting_down = True
             logger.info("Saving final chart before shutdown...")
             
-            # 마지막 차트 저장
+            # Save final chart
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = os.path.join(self.save_folder, f"market_chart_final_{timestamp}")
             self.save_chart(filename)
             
-            # 자동 저장 중지
+            # Stop auto-save
             self.auto_save = False
             
-            # GUI 종료
+            # Close GUI
             self.root.quit()
             self.root.destroy()
             
@@ -425,15 +454,17 @@ class MarketDataVisualization:
             logger.error(f"Error during shutdown: {e}")
     
     async def close(self):
-        """비동기 종료"""
+        """Async closure"""
         if hasattr(self, 'root') and self.root and not self.is_shutting_down:
-            self.root.after(0, self._on_closing)
-    
+            # 메인 스레드에서 실행되도록 수정
+            await asyncio.get_event_loop().run_in_executor(None, self._on_closing)
+            # 종료 처리를 위한 대기
+            await asyncio.sleep(0.5)
+            
     def __del__(self):
-        """소멸자"""
+        """Destructor"""
         if not self.is_shutting_down:
             try:
-                # 마지막 저장 시도
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = os.path.join(self.save_folder, f"market_chart_final_{timestamp}")
                 self.save_chart(filename)
