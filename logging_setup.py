@@ -6,6 +6,44 @@ from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
 
+class SizeTimeRotatingFileHandler(logging.Handler):
+    """크기와 시간 모두를 기준으로 로그파일을 관리하는 핸들러"""
+    
+    def __init__(self, filename: str, max_bytes: int = 100*1024*1024,  # 100MB # 파일은 30개 유지
+                 backup_count: int = 30, encoding: str = 'utf-8'):
+        super().__init__()
+        self.filename = filename
+        self.max_bytes = max_bytes
+        self.backup_count = backup_count
+        self.encoding = encoding
+        self.size_handler = logging.handlers.RotatingFileHandler(
+            filename=filename,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding=encoding
+        )
+        self.time_handler = logging.handlers.TimedRotatingFileHandler(
+            filename=filename,
+            when='midnight',
+            interval=1,
+            backupCount=backup_count,
+            encoding=encoding
+        )
+
+    def emit(self, record):
+        """로그 레코드 처리"""
+        try:
+            # 크기 기반 로테이션 체크
+            if os.path.exists(self.filename):
+                if os.path.getsize(self.filename) >= self.max_bytes:
+                    self.size_handler.emit(record)
+                    return
+
+            # 시간 기반 로테이션
+            self.time_handler.emit(record)
+        except Exception:
+            self.handleError(record)
+
 def setup_logging(log_dir: str = "logs", env_path: Optional[str] = None) -> None:
     """
     로깅 설정을 초기화합니다.
@@ -59,21 +97,14 @@ def setup_logging(log_dir: str = "logs", env_path: Optional[str] = None) -> None
         )
     }
     
-    # 공통 핸들러 설정 함수
-    def setup_file_handler(log_path: str, level: int, 
-                         formatter_key: str = 'detailed') -> logging.Handler:
-        handler = logging.FileHandler(log_path, encoding='utf-8')
-        handler.setLevel(level)
-        handler.setFormatter(formatters[formatter_key])
-        return handler
-    
-    def setup_rotating_handler(log_path: str, level: int,
-                             formatter_key: str = 'detailed') -> logging.Handler:
-        handler = logging.handlers.TimedRotatingFileHandler(
-            log_path,
-            when='midnight',
-            interval=1,
-            backupCount=7,
+    # 핸들러 설정 함수
+    def setup_handler(log_path: str, level: int, 
+                     formatter_key: str = 'detailed',
+                     max_bytes: int = 10*1024*1024) -> logging.Handler:
+        handler = SizeTimeRotatingFileHandler(
+            filename=log_path,
+            max_bytes=max_bytes,
+            backup_count=30,
             encoding='utf-8'
         )
         handler.setLevel(level)
@@ -86,35 +117,42 @@ def setup_logging(log_dir: str = "logs", env_path: Optional[str] = None) -> None
     console_handler.setFormatter(formatters['detailed'])
     root_logger.addHandler(console_handler)
     
-    # 메인 로그 핸들러
-    main_handler = setup_rotating_handler(log_paths['main'], log_level)
-    root_logger.addHandler(main_handler)
+    # 각 로그 타입별 핸들러 설정
+    handlers_config = {
+        'main': (log_paths['main'], log_level),
+        'error': (log_paths['error'], logging.ERROR),
+        'trades': (log_paths['trades'], logging.INFO),
+        'api': (log_paths['api'], logging.ERROR),
+        'websocket': (log_paths['websocket'], logging.INFO)
+    }
     
-    # 에러 로그 핸들러
-    error_handler = setup_file_handler(log_paths['error'], logging.ERROR)
-    error_handler.addFilter(lambda record: record.levelno >= logging.ERROR)
-    root_logger.addHandler(error_handler)
-    
-    # 트레이딩 로그 핸들러
-    trading_handler = setup_rotating_handler(log_paths['trades'], logging.INFO)
-    trading_handler.addFilter(
-        lambda record: 'trading_strategy' in record.name.lower() or
-                      'order_execution' in record.name.lower()
-    )
-    root_logger.addHandler(trading_handler)
-    
-    # API 로그 핸들러
-    api_handler = setup_rotating_handler(log_paths['api'], logging.ERROR, 'api')  # INFO를 ERROR로 변경
-    api_handler.addFilter(lambda record: 'bitget_api' in record.name.lower() and record.levelno >= logging.ERROR)  # ERROR 이상 레벨만 로깅
-    root_logger.addHandler(api_handler)
-    
-    # WebSocket 로그 핸들러
-    ws_handler = setup_rotating_handler(log_paths['websocket'], logging.INFO)
-    ws_handler.addFilter(lambda record: 'websocket' in record.name.lower())
-    root_logger.addHandler(ws_handler)
+    for log_type, (path, level) in handlers_config.items():
+        handler = setup_handler(path, level, 
+                              'api' if log_type == 'api' else 'detailed')
+        
+        # 필터 설정
+        if log_type == 'error':
+            handler.addFilter(lambda record: record.levelno >= logging.ERROR)
+        elif log_type == 'trades':
+            handler.addFilter(
+                lambda record: 'trading_strategy' in record.name.lower() or
+                              'order_execution' in record.name.lower()
+            )
+        elif log_type == 'api':
+            handler.addFilter(
+                lambda record: 'bitget_api' in record.name.lower() and 
+                              record.levelno >= logging.ERROR
+            )
+        elif log_type == 'websocket':
+            handler.addFilter(
+                lambda record: 'websocket' in record.name.lower()
+            )
+        
+        root_logger.addHandler(handler)
     
     # API 로거 특별 설정
     api_logger = logging.getLogger('bitget_api')
+    api_handler = setup_handler(log_paths['api'], logging.ERROR, 'api')
     api_logger.propagate = False
     api_logger.addHandler(api_handler)
     
@@ -138,7 +176,8 @@ class APILogger:
         }
         
         if error:
-            self.logger.error(f"{method} request failed: {str(error)}", extra=extra)
+            self.logger.error(f"{method} request failed: {str(error)}", 
+                            extra=extra)
         elif status_code:
             level = logging.INFO if status_code < 400 else logging.ERROR
             self.logger.log(level, f"{method} request completed", extra=extra)

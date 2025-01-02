@@ -231,6 +231,25 @@ class TradingStrategy:
             )
             
             if success:
+                # 거래 기록 저장
+                trade_data = {
+                    'timestamp': int(time.time() * 1000),
+                    'symbol': "BTCUSDT",
+                    'side': side,
+                    'size': float(total_size),
+                    'entry_price': float(entry_price),
+                    'exit_price': 0.0,  # 진입 시에는 0
+                    'pnl': 0.0,  # 진입 시에는 0
+                    'pnl_percentage': 0.0,  # 진입 시에는 0
+                    'leverage': self.config.leverage,
+                    'trade_type': 'limit',
+                    'entry_type': 'trend_follow',  # 전략에 따라 수정 가능
+                    'exit_reason': ''  # 진입 시에는 빈 문자열
+                }
+                
+                self.market_data.db_manager.store_trade(trade_data)
+                logger.info(f"Trade entry recorded: {side} {total_size} @ {entry_price}")
+                
                 self.in_position = True
                 self.last_trade_time = int(time.time())
                 logger.info(f"Successfully placed {side.upper()} position with stop loss at {stop_loss_price}")
@@ -247,9 +266,42 @@ class TradingStrategy:
         try:
             logger.info(f"Closing position: {position.symbol}, reason: {reason}")
             
+            # 현재 가격 정보 가져오기
+            current_price = self.market_data.get_latest_price()
+            
             close_success = await self.order_executor.execute_market_close(position)
             if close_success:
-                logger.info(f"Position fully closed with market order ({reason})")
+                # PnL 계산
+                if position.side == 'long':
+                    pnl = (current_price - position.entry_price) * position.size
+                    pnl_percentage = ((current_price - position.entry_price) / position.entry_price) * 100
+                else:  # short
+                    pnl = (position.entry_price - current_price) * position.size
+                    pnl_percentage = ((position.entry_price - current_price) / position.entry_price) * 100
+
+                # 거래 기록 저장
+                trade_data = {
+                    'timestamp': int(time.time() * 1000),
+                    'symbol': position.symbol,
+                    'side': position.side,
+                    'size': position.size,
+                    'entry_price': position.entry_price,
+                    'exit_price': current_price,
+                    'pnl': pnl,
+                    'pnl_percentage': pnl_percentage,
+                    'leverage': position.leverage,
+                    'trade_type': 'market',
+                    'entry_type': 'trend_follow',
+                    'exit_reason': reason
+                }
+                
+                self.market_data.db_manager.store_trade(trade_data)
+                logger.info(f"Position fully closed with market order. Reason: {reason}")
+                logger.info(f"Trade exit recorded - PnL: {pnl:.2f} USDT ({pnl_percentage:.2f}%)")
+                
+                # 트레이딩 지표 업데이트
+                self.metrics.update(pnl)
+                
                 self.in_position = False
                 return True
                 
@@ -283,6 +335,9 @@ class TradingStrategy:
         logger.info("Starting trading strategy")
         while True:
             try:
+                await self.market_data.update_position_ratio("BTCUSDT")
+                await self.market_data.update_open_interest("BTCUSDT")
+                await self.market_data.store_market_indicators()
                 await self._process_trading_logic()
                 await asyncio.sleep(1)
             except Exception as e:

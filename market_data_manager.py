@@ -615,3 +615,32 @@ class MarketDataManager:
                 'volatility': 'normal',
                 'warning': False
             }
+    
+    async def store_market_indicators(self):
+        """시장 지표 저장"""
+        try:
+            # 지표 계산
+            indicators = self.calculate_market_indicators()
+            if not indicators:
+                return
+
+            # 현재 타임스탬프
+            current_time = int(time.time() * 1000)
+
+            # 저장할 데이터 구성
+            data = {
+                'timestamp': current_time,
+                'open_interest': indicators.get('oi_slope', 0.0),
+                'long_ratio': indicators.get('current_long_ratio', 0.0),
+                'short_ratio': indicators.get('current_short_ratio', 0.0),
+                'long_short_ratio': indicators.get('current_ls_ratio', 0.0),
+                'oi_slope': indicators.get('oi_slope', 0.0),
+                'ls_ratio_slope': indicators.get('ls_ratio_slope', 0.0),
+                'ls_ratio_acceleration': indicators.get('ls_ratio_acceleration', 0.0)
+            }
+
+            # DB에 저장
+            self.db_manager.store_market_indicators(data)
+            
+        except Exception as e:
+            logger.error(f"Error storing market indicators: {e}")
