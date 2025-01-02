@@ -73,9 +73,9 @@ class TradingStrategy:
             ratio_trending_up = (ls_ratio_slope > self.config.min_slope and 
                             ls_ratio_acceleration > self.config.acceleration_threshold)
             
-            # OI RSI 과매도 확인 (롱 진입 조건)
+            # OI RSI 과매수 확인 (롱 진입 조건으로 변경)
             oi_rsi = indicators.get('oi_oi_rsi', indicators.get('oi_rsi', 50.0))
-            is_oversold = oi_rsi < 30
+            is_overbought = oi_rsi > 70
 
             # 1분마다 한 번씩만 로깅
             current_time = int(time.time())
@@ -86,7 +86,7 @@ class TradingStrategy:
                 logger.info(f"Price Change: {price_change:.2f} (Rising: {price_rising})")
                 logger.info(f"L/S Ratio Slope: {ls_ratio_slope:.6f} (Min Required: {self.config.min_slope})")
                 logger.info(f"L/S Ratio Acceleration: {ls_ratio_acceleration:.6f} (Min Required: {self.config.acceleration_threshold})")
-                logger.info(f"OI RSI: {oi_rsi:.2f} (Oversold: {is_oversold})")
+                logger.info(f"OI RSI: {oi_rsi:.2f} (Overbought: {is_overbought})")
                 logger.info(f"Ratio Trending Up: {ratio_trending_up}")
                 logger.info(f"Already In Position: {self.in_position}")
                 logger.info("================================")
@@ -95,7 +95,7 @@ class TradingStrategy:
                 ratio_trending_up and
                 price_above_ema and
                 price_rising and
-                is_oversold and
+                is_overbought and  # 변경된 부분
                 not self.in_position
             )
             
@@ -127,9 +127,9 @@ class TradingStrategy:
             ratio_trending_down = (ls_ratio_slope < -self.config.min_slope and 
                                 ls_ratio_acceleration < -self.config.acceleration_threshold)
             
-            # OI RSI 과매수 확인 (숏 진입 조건)
+            # OI RSI 과매도 확인 (숏 진입 조건으로 변경)
             oi_rsi = indicators.get('oi_oi_rsi', indicators.get('oi_rsi', 50.0))
-            is_overbought = oi_rsi > 70
+            is_oversold = oi_rsi < 30
 
             # 1분마다 한 번씩만 로깅
             current_time = int(time.time())
@@ -140,7 +140,7 @@ class TradingStrategy:
                 logger.info(f"Price Change: {price_change:.2f} (Falling: {price_falling})")
                 logger.info(f"L/S Ratio Slope: {ls_ratio_slope:.6f} (Min Required: {-self.config.min_slope})")
                 logger.info(f"L/S Ratio Acceleration: {ls_ratio_acceleration:.6f} (Min Required: {-self.config.acceleration_threshold})")
-                logger.info(f"OI RSI: {oi_rsi:.2f} (Overbought: {is_overbought})")
+                logger.info(f"OI RSI: {oi_rsi:.2f} (Oversold: {is_oversold})")
                 logger.info(f"Ratio Trending Down: {ratio_trending_down}")
                 logger.info(f"Already In Position: {self.in_position}")
                 logger.info("================================")
@@ -149,7 +149,7 @@ class TradingStrategy:
                 ratio_trending_down and
                 price_below_ema and
                 price_falling and
-                is_overbought and
+                is_oversold and  # 변경된 부분
                 not self.in_position
             )
             
@@ -180,8 +180,8 @@ class TradingStrategy:
                 return True, "stop_loss"
             
             oi_rsi = indicators.get('oi_oi_rsi', indicators.get('oi_rsi', 50.0))
-            if (position.side == 'long' and oi_rsi >= 80) or \
-            (position.side == 'short' and oi_rsi <= 30):
+            if  (position.side == 'long' and oi_rsi <= 30) or \
+                (position.side == 'short' and oi_rsi >= 80):
                 logger.info(f"OI RSI condition met for closing: {oi_rsi}")
                 return True, "oi_rsi_condition"
             
