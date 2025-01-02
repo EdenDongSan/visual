@@ -1,12 +1,10 @@
+# database_manager.py
 import mysql.connector
-from mysql.connector import pooling
+import logging
+import os
+from typing import Optional, List, Dict
 from dataclasses import dataclass
 from datetime import datetime
-import threading
-import logging
-import time
-import os
-from typing import List, Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -22,143 +20,115 @@ class Candle:
 
 class DatabaseManager:
     _instance = None
-    _lock = threading.Lock()
+    _initialized = False
     
     def __new__(cls):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-                cls._instance.initialized = False
-            return cls._instance
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
     
     def __init__(self):
-        with self._lock:
-            if self.initialized:
-                return
-                
-            self.pool = None
-            self.setup_database()
-            self.initialized = True
+        if not DatabaseManager._initialized:
+            try:
+                self.db = self._setup_database()
+                DatabaseManager._initialized = True
+            except Exception as e:
+                logger.error(f"Failed to initialize DatabaseManager: {e}")
+                raise
     
-    def setup_database(self):
+    def _setup_database(self):
+        """데이터베이스 연결 및 테이블 설정"""
         try:
-            dbconfig = {
-                "host": os.getenv('MYSQL_HOST'),
-                "user": os.getenv('MYSQL_USER'),
-                "password": os.getenv('MYSQL_PASSWORD'),
-                "database": os.getenv('MYSQL_DATABASE'),
-                "pool_name": "mypool",
-                "pool_size": 5,
-                "pool_reset_session": True,
-                "connect_timeout": 10
-            }
+            db = mysql.connector.connect(
+                host=os.getenv('MYSQL_HOST', 'localhost'),
+                user=os.getenv('MYSQL_USER'),
+                password=os.getenv('MYSQL_PASSWORD')
+            )
             
-            self.pool = mysql.connector.pooling.MySQLConnectionPool(**dbconfig)
+            cursor = db.cursor()
+            db_name = os.getenv('MYSQL_DATABASE')
             
-            self._setup_tables()
-            logger.info("Database setup completed successfully")
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
+            cursor.execute(f"USE {db_name}")
+            
+            # 기존 캔들 테이블
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS kline_1m (
+                timestamp BIGINT PRIMARY KEY,
+                open FLOAT,
+                high FLOAT,
+                low FLOAT,
+                close FLOAT,
+                volume FLOAT,
+                quote_volume FLOAT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
+            
+            # 시장 지표 테이블 추가
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS market_indicators (
+                timestamp BIGINT PRIMARY KEY,
+                open_interest FLOAT,
+                long_ratio FLOAT,
+                short_ratio FLOAT,
+                long_short_ratio FLOAT,
+                oi_slope FLOAT,
+                ls_ratio_slope FLOAT,
+                ls_ratio_acceleration FLOAT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
+            
+            # 거래 기록 테이블 추가
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trade_history (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                timestamp BIGINT,
+                symbol VARCHAR(20),
+                side VARCHAR(10),
+                size FLOAT,
+                entry_price FLOAT,
+                exit_price FLOAT,
+                pnl FLOAT,
+                pnl_percentage FLOAT,
+                leverage INT,
+                trade_type VARCHAR(20),
+                entry_type VARCHAR(20),
+                exit_reason VARCHAR(50),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
+            
+            db.commit()
+            cursor.close()
+            return db
             
         except Exception as e:
-            logger.error(f"Database setup error: {e}")
+            logger.error(f"Database connection error: {e}")
             raise
-    
-    def _setup_tables(self):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS kline_1m (
-                        timestamp BIGINT PRIMARY KEY,
-                        open FLOAT,
-                        high FLOAT,
-                        low FLOAT,
-                        close FLOAT,
-                        volume FLOAT,
-                        quote_volume FLOAT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        INDEX idx_created_at (created_at)
-                    )
-                """)
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS long_short_ratio (
-                        timestamp BIGINT PRIMARY KEY,
-                        long_ratio FLOAT,
-                        short_ratio FLOAT,
-                        long_short_ratio FLOAT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        INDEX idx_created_at (created_at)
-                    )
-                """)
-                
-                cursor.execute("""
-                    CREATE EVENT IF NOT EXISTS cleanup_old_data
-                    ON SCHEDULE EVERY 1 DAY
-                    DO BEGIN
-                        DELETE FROM kline_1m 
-                        WHERE created_at < DATE_SUB(NOW(), INTERVAL 30 DAY);
-                        DELETE FROM long_short_ratio 
-                        WHERE created_at < DATE_SUB(NOW(), INTERVAL 30 DAY);
-                    END
-                """)
-                
-                conn.commit()
-                
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Error setting up tables: {e}")
-                raise
-            finally:
-                cursor.close()
-    
-    def get_connection(self):
-        max_retries = 3
-        retry_delay = 1
-        
-        for attempt in range(max_retries):
-            try:
-                return self.pool.get_connection()
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    logger.error(f"Failed to get database connection after {max_retries} attempts")
-                    raise
-                logger.warning(f"Failed to get connection (attempt {attempt + 1}): {e}")
-                time.sleep(retry_delay * (2 ** attempt))
-    
-    def execute_with_retry(self, operation: callable, *args, **kwargs):
-        max_retries = 3
-        retry_delay = 1
-        
-        for attempt in range(max_retries):
-            try:
-                with self.get_connection() as conn:
-                    cursor = conn.cursor()
-                    try:
-                        result = operation(cursor, *args, **kwargs)
-                        conn.commit()
-                        return result
-                    except Exception as e:
-                        conn.rollback()
-                        raise
-                    finally:
-                        cursor.close()
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    logger.error(f"Operation failed after {max_retries} attempts: {e}")
-                    raise
-                logger.warning(f"Operation failed (attempt {attempt + 1}): {e}")
-                time.sleep(retry_delay * (2 ** attempt))
-    
+
+    def reconnect(self):
+        """DB 재연결"""
+        try:
+            if not self.db.is_connected():
+                self.db = self._setup_database()
+        except Exception as e:
+            logger.error(f"Database reconnection error: {e}")
+            raise
+
     def store_candle(self, candle: Candle):
-        def _store_candle(cursor, candle):
+        """단일 캔들 데이터 저장"""
+        try:
+            self.reconnect()
+            cursor = self.db.cursor()
+            
             cursor.execute("""
                 INSERT INTO kline_1m 
                 (timestamp, open, high, low, close, volume, quote_volume)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
-                open=VALUES(open), high=VALUES(high), low=VALUES(low),
-                close=VALUES(close), volume=VALUES(volume),
-                quote_volume=VALUES(quote_volume)
+                open=%s, high=%s, low=%s, close=%s, volume=%s, quote_volume=%s
             """, (
                 candle.timestamp,
                 candle.open,
@@ -166,37 +136,28 @@ class DatabaseManager:
                 candle.low,
                 candle.close,
                 candle.volume,
+                candle.quote_volume,
+                candle.open,
+                candle.high,
+                candle.low,
+                candle.close,
+                candle.volume,
                 candle.quote_volume
             ))
-        
-        try:
-            self.execute_with_retry(_store_candle, candle)
+            
+            self.db.commit()
+            cursor.close()
+            
         except Exception as e:
             logger.error(f"Error storing candle data: {e}")
-            raise
-    
-    def store_long_short_ratio(self, timestamp: int, long_ratio: float, 
-                             short_ratio: float, long_short_ratio: float):
-        def _store_ratio(cursor, *args):
-            cursor.execute("""
-                INSERT INTO long_short_ratio 
-                (timestamp, long_ratio, short_ratio, long_short_ratio)
-                VALUES (%s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                long_ratio=VALUES(long_ratio),
-                short_ratio=VALUES(short_ratio),
-                long_short_ratio=VALUES(long_short_ratio)
-            """, args)
-        
-        try:
-            self.execute_with_retry(_store_ratio, timestamp, long_ratio, 
-                                  short_ratio, long_short_ratio)
-        except Exception as e:
-            logger.error(f"Error storing long/short ratio data: {e}")
-            raise
-    
+            self.db.rollback()
+
     def get_recent_candles(self, limit: int = 200) -> List[Candle]:
-        def _get_candles(cursor, limit):
+        """최근 캔들 데이터 조회"""
+        try:
+            self.reconnect()
+            cursor = self.db.cursor()
+            
             cursor.execute("""
                 SELECT timestamp, open, high, low, close, volume, quote_volume
                 FROM kline_1m
@@ -205,6 +166,8 @@ class DatabaseManager:
             """, (limit,))
             
             rows = cursor.fetchall()
+            cursor.close()
+            
             return [
                 Candle(
                     timestamp=row[0],
@@ -216,55 +179,118 @@ class DatabaseManager:
                     quote_volume=float(row[6]) if row[6] else None
                 )
                 for row in rows
-            ][::-1]  # Reverse for chronological order
-        
-        try:
-            return self.execute_with_retry(_get_candles, limit)
+            ]
+            
         except Exception as e:
             logger.error(f"Error fetching recent candles: {e}")
             return []
-    
-    def get_recent_ratio(self, limit: int = 200) -> List[Dict]:
-        def _get_ratios(cursor, limit):
-            cursor.execute("""
-                SELECT timestamp, long_ratio, short_ratio, long_short_ratio
-                FROM long_short_ratio
-                ORDER BY timestamp DESC
-                LIMIT %s
-            """, (limit,))
-            
-            rows = cursor.fetchall()
-            return [
-                {
-                    'timestamp': row[0],
-                    'long_ratio': float(row[1]),
-                    'short_ratio': float(row[2]),
-                    'long_short_ratio': float(row[3])
-                }
-                for row in rows
-            ][::-1]
-        
-        try:
-            return self.execute_with_retry(_get_ratios, limit)
-        except Exception as e:
-            logger.error(f"Error fetching recent ratios: {e}")
-            return []
 
-    def cleanup_old_data(self, days: int = 30):
-        def _cleanup(cursor, days):
-            cursor.execute("""
-                DELETE FROM kline_1m 
-                WHERE created_at < DATE_SUB(NOW(), INTERVAL %s DAY)
-            """, (days,))
+    def store_initial_candles(self, candles: List[Dict]):
+        """초기 캔들 데이터 일괄 저장"""
+        try:
+            self.reconnect()
+            cursor = self.db.cursor()
+            
+            for candle_data in candles:
+                cursor.execute("""
+                    INSERT INTO kline_1m 
+                    (timestamp, open, high, low, close, volume, quote_volume)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                    open=%s, high=%s, low=%s, close=%s, volume=%s, quote_volume=%s
+                """, (
+                    int(candle_data[0]),     # timestamp
+                    float(candle_data[1]),   # open
+                    float(candle_data[2]),   # high
+                    float(candle_data[3]),   # low
+                    float(candle_data[4]),   # close
+                    float(candle_data[5]),   # volume
+                    float(candle_data[6]),   # quote_volume
+                    float(candle_data[1]),   # open
+                    float(candle_data[2]),   # high
+                    float(candle_data[3]),   # low
+                    float(candle_data[4]),   # close
+                    float(candle_data[5]),   # volume
+                    float(candle_data[6])    # quote_volume
+                ))
+            
+            self.db.commit()
+            cursor.close()
+            logger.info(f"Successfully stored {len(candles)} initial candles")
+            
+        except Exception as e:
+            logger.error(f"Error storing initial candles: {e}")
+            self.db.rollback()
+
+
+    def store_market_indicators(self, timestamp: int, indicators: dict):
+        """시장 지표 저장"""
+        try:
+            self.reconnect()
+            cursor = self.db.cursor()
             
             cursor.execute("""
-                DELETE FROM long_short_ratio 
-                WHERE created_at < DATE_SUB(NOW(), INTERVAL %s DAY)
-            """, (days,))
-        
-        try:
-            self.execute_with_retry(_cleanup, days)
-            logger.info(f"Successfully cleaned up data older than {days} days")
+                INSERT INTO market_indicators 
+                (timestamp, open_interest, long_ratio, short_ratio, long_short_ratio,
+                oi_slope, ls_ratio_slope, ls_ratio_acceleration)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                open_interest=%s, long_ratio=%s, short_ratio=%s, long_short_ratio=%s,
+                oi_slope=%s, ls_ratio_slope=%s, ls_ratio_acceleration=%s
+            """, (
+                timestamp,
+                indicators.get('open_interest', 0),
+                indicators.get('long_ratio', 0),
+                indicators.get('short_ratio', 0),
+                indicators.get('long_short_ratio', 0),
+                indicators.get('oi_slope', 0),
+                indicators.get('ls_ratio_slope', 0),
+                indicators.get('ls_ratio_acceleration', 0),
+                indicators.get('open_interest', 0),
+                indicators.get('long_ratio', 0),
+                indicators.get('short_ratio', 0),
+                indicators.get('long_short_ratio', 0),
+                indicators.get('oi_slope', 0),
+                indicators.get('ls_ratio_slope', 0),
+                indicators.get('ls_ratio_acceleration', 0)
+            ))
+            
+            self.db.commit()
+            cursor.close()
+            
         except Exception as e:
-            logger.error(f"Error cleaning up old data: {e}")
-            raise
+            logger.error(f"Error storing market indicators: {e}")
+            self.db.rollback()
+
+    def store_trade(self, trade_data: dict):
+        """거래 기록 저장"""
+        try:
+            self.reconnect()
+            cursor = self.db.cursor()
+            
+            cursor.execute("""
+                INSERT INTO trade_history 
+                (timestamp, symbol, side, size, entry_price, exit_price,
+                pnl, pnl_percentage, leverage, trade_type, entry_type, exit_reason)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                trade_data['timestamp'],
+                trade_data['symbol'],
+                trade_data['side'],
+                trade_data['size'],
+                trade_data['entry_price'],
+                trade_data['exit_price'],
+                trade_data['pnl'],
+                trade_data['pnl_percentage'],
+                trade_data['leverage'],
+                trade_data['trade_type'],
+                trade_data['entry_type'],
+                trade_data['exit_reason']
+            ))
+            
+            self.db.commit()
+            cursor.close()
+            
+        except Exception as e:
+            logger.error(f"Error storing trade history: {e}")
+            self.db.rollback()

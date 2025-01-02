@@ -1,157 +1,179 @@
 import asyncio
-import logging
-from dotenv import load_dotenv
-import os
-import sys
-from market_data import MarketDataManager
-from visualization import MarketDataVisualization
 import signal
-import threading
+import sys
+import psutil
+from data_web import BitgetWebsocket
+from data_api import BitgetAPI
+import os
+from dotenv import load_dotenv
+import logging
+from order_execution import OrderExecutor
+from trading_strategy_implementation import TradingStrategy
+from market_data_manager import MarketDataManager
+from database_manager import DatabaseManager
+from logging_setup import setup_logging
 
-# Load environment variables
-load_dotenv()
+setup_logging()
+logger = logging.getLogger(__name__)
 
-# Configure logging
-def setup_logging():
-    """Configure logging with rotating file handler"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler('market_data.log')
-        ]
-    )
-    return logging.getLogger(__name__)
-
-logger = setup_logging()
-
-class Application:
+class TradingBot:
     def __init__(self):
-        self.market_data = MarketDataManager()
-        self.visualization = MarketDataVisualization(max_points=1000)
-        self.update_interval = 1.0
-        self.should_run = True
-        self._setup_signal_handlers()
-    
-    def _setup_signal_handlers(self):
-        """Setup signal handlers for graceful shutdown"""
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            signal.signal(sig, self._signal_handler)
-    
-    def _signal_handler(self, signum, frame):
-        """Handle shutdown signals"""
-        logger.info(f"Received signal {signum}, initiating shutdown...")
-        self.should_run = False
-    
-    async def update_visualization(self, data):
-        """Visualization update callback with error handling"""
-        try:
-            if not self.should_run:
-                return
-                
-            recent_data = self.market_data.get_recent_data()
-            await self.visualization.update_data(recent_data)
-            
-            # Get trend probabilities
-            candles = recent_data['candles']
-            ratios = recent_data['ratios']
-            if candles and ratios:
-                trend_analysis = self.visualization.calculate_trend_probabilities(
-                    candles,
-                    ratios
-                )
-                logger.debug(f"Trend analysis: {trend_analysis}")
-            
-        except Exception as e:
-            logger.error(f"Error updating visualization: {e}")
-    
-    async def run(self):
-        """Main application loop with improved error handling"""
-        try:
-            self.market_data.add_callback(self.update_visualization)
-            market_data_task = asyncio.create_task(self.market_data.run())
-            
-            # Wait for termination signal
-            while self.should_run:
-                await asyncio.sleep(0.1)
-            
-            # Graceful shutdown sequence
-            logger.info("Shutting down application...")
-            self.market_data.stop()
-            
-            # Wait for visualization cleanup
-            await self.visualization.close()
-            await asyncio.sleep(1)  # Allow time for cleanup
-            
-            # Cancel market data task
-            market_data_task.cancel()
-            try:
-                await market_data_task
-            except asyncio.CancelledError:
-                pass
-                
-        except Exception as e:
-            logger.error(f"Application error: {e}")
-        finally:
-            # Ensure visualization is closed
-            if not self.visualization.is_shutting_down:
-                await self.visualization.close()
+        # 환경변수 로드
+        load_dotenv()
+        
+        # API 설정
+        self.api_key = os.getenv('BITGET_ACCESS_KEY')
+        self.secret_key = os.getenv('BITGET_SECRET_KEY')
+        self.passphrase = os.getenv('BITGET_PASSPHRASE')
+        
+        # DB 매니저 초기화
+        self.db_manager = DatabaseManager()
+        
+        # API 클라이언트 초기화
+        self.api = BitgetAPI(self.api_key, self.secret_key, self.passphrase)
+        
+        # MarketData 매니저 초기화
+        self.market_data = MarketDataManager(api=self.api)
+        
+        # 웹소켓 초기화
+        self.ws = BitgetWebsocket(api=self.api, market_data=self.market_data)
+        
+        # 주문 실행기 초기화
+        self.order_executor = OrderExecutor(self.api)
+        
+        # 트레이딩 전략 초기화
+        self.strategy = TradingStrategy(
+            market_data=self.market_data,
+            order_executor=self.order_executor
+        )
+        
+        self.is_running = False
+        self.tasks = []
+        self._cleanup_done = asyncio.Event()
 
-async def main():
-    """Application entry point with error handling"""
-    try:
-        # Verify environment variables
-        required_env_vars = [
-            'MYSQL_HOST',
-            'MYSQL_USER',
-            'MYSQL_PASSWORD',
-            'MYSQL_DATABASE',
-            'BITGET_API_KEY',
-            'BITGET_SECRET_KEY',
-            'BITGET_PASSPHRASE'
-        ]
-        
-        missing_vars = [var for var in required_env_vars if not os.getenv(var)]
-        if missing_vars:
-            logger.error(f"Missing required environment variables: {missing_vars}")
+    async def cleanup(self):
+        """프로그램 종료 시 정리 작업 수행"""
+        if not self.is_running:
             return
+                
+        logger.info("프로그램 종료 시작...")
+        self.is_running = False
         
-        app = Application()
-        await app.run()
-        
-    except KeyboardInterrupt:
-        logger.info("Application terminated by user")
-    except Exception as e:
-        logger.error(f"Fatal application error: {e}")
-    finally:
-        # Cleanup remaining tasks
-        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        for task in tasks:
-            task.cancel()
+        try:
+            # 실행 중인 태스크 취소
+            for task in asyncio.all_tasks():
+                if task != asyncio.current_task():
+                    task.cancel()
+                    try:
+                        await asyncio.wait_for(task, timeout=5.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+            
+            # 열린 포지션 확인 및 청산
+            position = await self.order_executor.get_position("BTCUSDT")
+            if position:
+                logger.info("열린 포지션 발견, 시장가 청산 시도...")
+                await self.order_executor.execute_market_close(position)
+            
+            # 미체결 주문 취소
+            await self.order_executor.cancel_all_symbol_orders("BTCUSDT")
+            
+            # 웹소켓 연결 종료
+            if self.ws:
+                await self.ws.disconnect()
+                logger.info("웹소켓 연결 종료 완료")
+                    
+            # API 세션 종료
+            if hasattr(self, 'api'):
+                await self.api.__aexit__(None, None, None)
+                logger.info("API 세션 종료 완료")
+                    
+        except Exception as e:
+            logger.error(f"정리 작업 중 오류 발생: {e}")
+        finally:
+            self._cleanup_done.set()
+            logger.info("프로그램 종료 완료")
+
+    async def start(self):
+        """트레이딩 봇 시작"""
+        try:
+            self.is_running = True
+            
+            # 웹소켓 연결
+            await self.ws.connect()
+            
+            # 초기 데이터 로드 및 초기화
+            await self.ws.store_initial_candles()  # DB에 초기 데이터 저장
+            await self.market_data.initialize()    # 캐시 초기화
+            
+            # 기존 미체결 주문 취소
+            await self.order_executor.cancel_all_symbol_orders("BTCUSDT")
+            
+            # 태스크 생성
+            self.tasks = [
+                asyncio.create_task(self.ws.subscribe_kline()),
+                asyncio.create_task(self.strategy.run()),
+                asyncio.create_task(self._monitor_system())
+            ]
+            
+            # 태스크 완료 대기
+            await asyncio.gather(*self.tasks, return_exceptions=True)
+            
+        except asyncio.CancelledError:
+            logger.info("프로그램 실행 취소됨")
+        except Exception as e:
+            logger.error(f"실행 중 오류 발생: {e}")
+        finally:
+            await self.cleanup()
+            await self._cleanup_done.wait()
+
+    async def _monitor_system(self):
+        """시스템 상태 모니터링"""
+        while self.is_running:
             try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        
-        # Stop event loop
-        loop = asyncio.get_event_loop()
-        loop.stop()
+                # 연결 상태 확인
+                if not await self.ws.is_connected():
+                    logger.warning("웹소켓 연결 끊김 감지, 재연결 시도...")
+                    await self.ws.connect()
+                
+                # 메모리 사용량 모니터링
+                process = psutil.Process(os.getpid())
+                memory_usage = process.memory_info().rss / 1024 / 1024  # MB
+                logger.info(f"메모리 사용량: {memory_usage:.2f} MB")
+                
+                await asyncio.sleep(60)  # 1분마다 체크
+                
+            except Exception as e:
+                logger.error(f"모니터링 중 오류 발생: {e}")
+                await asyncio.sleep(5)
+
+def main():
+   bot = TradingBot()
+   loop = asyncio.new_event_loop()
+   asyncio.set_event_loop(loop)
+   
+   def signal_handler():
+       logger.info("종료 시그널 수신...")
+       for task in asyncio.all_tasks(loop):
+           task.cancel()
+   
+   try:
+       for sig in (signal.SIGINT, signal.SIGTERM):
+           loop.add_signal_handler(sig, signal_handler)
+   except NotImplementedError:
+       # Windows에서는 signal.signal 사용
+       signal.signal(signal.SIGINT, lambda s, f: signal_handler())
+       signal.signal(signal.SIGTERM, lambda s, f: signal_handler())
+   
+   try:
+       loop.run_until_complete(bot.start())
+   except KeyboardInterrupt:
+       logger.info("사용자에 의한 프로그램 종료")
+       loop.run_until_complete(bot.cleanup())
+   except Exception as e:
+       logger.error(f"예기치 않은 오류 발생: {e}")
+   finally:
+       loop.close()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        logger.error(f"Error in main: {e}")
-    finally:
-        # Ensure event loop is closed
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.stop()
-            if not loop.is_closed():
-                loop.close()
-        except Exception as e:
-            logger.error(f"Error closing event loop: {e}")
+   main()
