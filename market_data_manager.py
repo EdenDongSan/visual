@@ -24,7 +24,7 @@ class MarketDataManager:
         self.last_saved_oi = None  # 마지막으로 저장된 OI 값
         
         self.ratio_update_interval = 60  # 60초
-        self.oi_update_interval = 60     # 60초로 변경
+        self.oi_update_interval = 20     # 20초로 변경
         self.last_ratio_update = 0
         self.last_oi_update = 0          # 초기값 0으로 설정
         
@@ -123,20 +123,25 @@ class MarketDataManager:
             logger.error(f"Error updating OI data: {e}")
 
     async def update_position_ratio(self, symbol: str = 'BTCUSDT'):
-        """포지션 비율 데이터 업데이트 - 유의미한 변화가 있을 때만"""
+        """포지션 비율 데이터 업데이트"""
         current_time = int(time.time())
         
+        # 업데이트 간격 확인
         if current_time - self.last_ratio_update < self.ratio_update_interval:
             return
             
         ratios = await self.api.get_position_ratio(symbol)
-        if ratios is not None:
+        if ratios is None:  # API 속도 제한 등으로 실패한 경우
+            logger.debug("Failed to update position ratio, will retry later")
+            return
+                
+        if ratios:
             # 유의미한 변화 확인
             current_ls_ratio = ratios['long_short_ratio']
             
             if self._has_significant_change(current_ls_ratio, 
-                                         self.last_saved_ratio, 
-                                         self.ratio_change_threshold):
+                                        self.last_saved_ratio, 
+                                        self.ratio_change_threshold):
                 # 타임스탬프 추가
                 ratios['timestamp'] = current_time * 1000
                 self.position_ratio_cache.append(ratios)
@@ -620,27 +625,28 @@ class MarketDataManager:
         """시장 지표 저장"""
         try:
             # 지표 계산
-            indicators = self.calculate_market_indicators()
-            if not indicators:
+            market_indicators = self.calculate_market_indicators()
+            
+            if not market_indicators:
                 return
 
             # 현재 타임스탬프
             current_time = int(time.time() * 1000)
 
-            # 저장할 데이터 구성
-            data = {
+            # 데이터 구성
+            indicators_data = {
                 'timestamp': current_time,
-                'open_interest': indicators.get('oi_slope', 0.0),
-                'long_ratio': indicators.get('current_long_ratio', 0.0),
-                'short_ratio': indicators.get('current_short_ratio', 0.0),
-                'long_short_ratio': indicators.get('current_ls_ratio', 0.0),
-                'oi_slope': indicators.get('oi_slope', 0.0),
-                'ls_ratio_slope': indicators.get('ls_ratio_slope', 0.0),
-                'ls_ratio_acceleration': indicators.get('ls_ratio_acceleration', 0.0)
+                'open_interest': market_indicators.get('oi_slope', 0.0),
+                'long_ratio': market_indicators.get('current_long_ratio', 0.0),
+                'short_ratio': market_indicators.get('current_short_ratio', 0.0),
+                'long_short_ratio': market_indicators.get('current_ls_ratio', 1.0),
+                'oi_slope': market_indicators.get('oi_slope', 0.0),
+                'ls_ratio_slope': market_indicators.get('ls_ratio_slope', 0.0),
+                'ls_ratio_acceleration': market_indicators.get('ls_ratio_acceleration', 0.0)
             }
 
-            # DB에 저장
-            self.db_manager.store_market_indicators(data)
-            
+            # DB 저장
+            self.db_manager.store_market_indicators(current_time, indicators_data)
+                
         except Exception as e:
             logger.error(f"Error storing market indicators: {e}")

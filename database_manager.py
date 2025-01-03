@@ -239,20 +239,20 @@ class DatabaseManager:
                 oi_slope=%s, ls_ratio_slope=%s, ls_ratio_acceleration=%s
             """, (
                 timestamp,
-                indicators.get('open_interest', 0),
-                indicators.get('long_ratio', 0),
-                indicators.get('short_ratio', 0),
-                indicators.get('long_short_ratio', 0),
-                indicators.get('oi_slope', 0),
-                indicators.get('ls_ratio_slope', 0),
-                indicators.get('ls_ratio_acceleration', 0),
-                indicators.get('open_interest', 0),
-                indicators.get('long_ratio', 0),
-                indicators.get('short_ratio', 0),
-                indicators.get('long_short_ratio', 0),
-                indicators.get('oi_slope', 0),
-                indicators.get('ls_ratio_slope', 0),
-                indicators.get('ls_ratio_acceleration', 0)
+                indicators['open_interest'],
+                indicators['long_ratio'],
+                indicators['short_ratio'],
+                indicators['long_short_ratio'],
+                indicators['oi_slope'],
+                indicators['ls_ratio_slope'],
+                indicators['ls_ratio_acceleration'],
+                indicators['open_interest'],
+                indicators['long_ratio'],
+                indicators['short_ratio'],
+                indicators['long_short_ratio'],
+                indicators['oi_slope'],
+                indicators['ls_ratio_slope'],
+                indicators['ls_ratio_acceleration']
             ))
             
             self.db.commit()

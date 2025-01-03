@@ -4,6 +4,7 @@ import hmac
 import hashlib
 import time
 import logging
+import asyncio
 from logging_setup import APILogger
 import json
 from models import Position
@@ -351,37 +352,37 @@ class BitgetAPI:
         return results
     
     async def get_position_ratio(self, symbol: str, period: str = '5m') -> Optional[Dict[str, float]]:
-        """포지션 롱숏 비율 데이터 조회(어카운트 데이터라,, 값이 한쪽으로 쏠리게 되면 고래진입신호로 해석가능할듯)
-        
-        Args:
-            symbol (str): 거래쌍 심볼 (예: 'BTCUSDT')
-            period (str): 기간 (기본값: '5m')
-            
-        Returns:
-            Optional[Dict[str, float]]: {
-                'long_ratio': float,  # 롱 포지션 비율
-                'short_ratio': float,  # 숏 포지션 비율
-                'long_short_ratio': float  # 롱숏 비율
-            }
-        """
+        """포지션 롱숏 비율 데이터 조회"""
         try:
+            # 마지막 요청 시간 체크
+            current_time = time.time()
+            if hasattr(self, '_last_ratio_request') and \
+            current_time - self._last_ratio_request < 1.1:  # 1.1초 간격 보장
+                await asyncio.sleep(1.1)  # 요청 간 최소 대기 시간
+            
             params = {
                 'symbol': symbol,
                 'period': period
             }
             
             response = await self._request('GET', '/api/v2/mix/market/account-long-short', params=params)
+            self._last_ratio_request = time.time()  # 요청 시간 업데이트
             
             if response and response.get('code') == '00000':
                 data = response.get('data', [])
                 if data:
-                    latest = data[-1]  # 가장 최근 데이터
+                    latest = data[-1]
                     return {
                         'long_ratio': float(latest['longAccountRatio']),
                         'short_ratio': float(latest['shortAccountRatio']),
                         'long_short_ratio': float(latest['longShortAccountRatio'])
                     }
-                    
+            
+            if response and response.get('code') == '429':
+                logger.warning("Rate limit reached, waiting for 2 seconds...")
+                await asyncio.sleep(2)  # 속도 제한 시 2초 대기
+                return None
+                
             logger.error(f"Failed to get position ratio: {response}")
             return None
             

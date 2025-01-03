@@ -46,15 +46,17 @@ class BitgetWebsocket:
        return False
 
     async def disconnect(self):
-       """WebSocket 연결 종료"""
-       if self.ws:
-           try:
-               await self.ws.close()
-               self.connected = False
-               logger.info("WebSocket disconnected")
-           except Exception as e:
-               logger.error(f"Error disconnecting WebSocket: {e}")
-
+        """WebSocket 연결 종료"""
+        if self.ws:
+            try:
+                await asyncio.wait_for(self.ws.close(), timeout=5.0)
+                self.connected = False
+                logger.info("WebSocket disconnected")
+            except asyncio.TimeoutError:
+                logger.warning("WebSocket close timeout")
+            except Exception as e:
+                logger.error(f"Error disconnecting WebSocket: {e}")
+                
     async def is_connected(self):
        """웹소켓 연결 상태 확인"""
        return (self.ws is not None and 

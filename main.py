@@ -60,40 +60,28 @@ class TradingBot:
         self.is_running = False
         
         try:
-            # 실행 중인 태스크 취소
-            for task in asyncio.all_tasks():
-                if task != asyncio.current_task():
-                    task.cancel()
-                    try:
-                        await asyncio.wait_for(task, timeout=5.0)
-                    except (asyncio.CancelledError, asyncio.TimeoutError):
-                        pass
-            
-            # 열린 포지션 확인 및 청산
-            position = await self.order_executor.get_position("BTCUSDT")
-            if position:
-                logger.info("열린 포지션 발견, 시장가 청산 시도...")
-                await self.order_executor.execute_market_close(position)
-            
-            # 미체결 주문 취소
-            await self.order_executor.cancel_all_symbol_orders("BTCUSDT")
-            
             # 웹소켓 연결 종료
-            if self.ws:
-                await self.ws.disconnect()
-                logger.info("웹소켓 연결 종료 완료")
-                    
+            if self.ws and self.ws.ws:
+                try:
+                    await asyncio.wait_for(self.ws.disconnect(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning("웹소켓 연결 종료 시간 초과")
+                except Exception as e:
+                    logger.error(f"웹소켓 연결 종료 중 오류: {e}")
+            
             # API 세션 종료
-            if hasattr(self, 'api'):
-                await self.api.__aexit__(None, None, None)
-                logger.info("API 세션 종료 완료")
-                    
-        except Exception as e:
-            logger.error(f"정리 작업 중 오류 발생: {e}")
+            if hasattr(self.api, 'session') and self.api.session:
+                try:
+                    await asyncio.wait_for(self.api.session.close(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning("API 세션 종료 시간 초과")
+                except Exception as e:
+                    logger.error(f"API 세션 종료 중 오류: {e}")
+        
         finally:
             self._cleanup_done.set()
             logger.info("프로그램 종료 완료")
-
+            
     async def start(self):
         """트레이딩 봇 시작"""
         try:
