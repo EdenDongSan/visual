@@ -1,5 +1,4 @@
-# database_manager.py
-import mysql.connector
+import aiomysql
 import logging
 import os
 from typing import Optional, List, Dict
@@ -29,268 +28,245 @@ class DatabaseManager:
     
     def __init__(self):
         if not DatabaseManager._initialized:
-            try:
-                self.db = self._setup_database()
-                DatabaseManager._initialized = True
-            except Exception as e:
-                logger.error(f"Failed to initialize DatabaseManager: {e}")
-                raise
+            self.pool = None
+            DatabaseManager._initialized = True
     
-    def _setup_database(self):
-        """데이터베이스 연결 및 테이블 설정"""
+    async def initialize(self):
+        """비동기 DB 풀 초기화"""
         try:
-            db = mysql.connector.connect(
+            self.pool = await aiomysql.create_pool(
                 host=os.getenv('MYSQL_HOST', 'localhost'),
                 user=os.getenv('MYSQL_USER'),
-                password=os.getenv('MYSQL_PASSWORD')
+                password=os.getenv('MYSQL_PASSWORD'),
+                db=os.getenv('MYSQL_DATABASE'),
+                autocommit=True
             )
-            
-            cursor = db.cursor()
-            db_name = os.getenv('MYSQL_DATABASE')
-            
-            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
-            cursor.execute(f"USE {db_name}")
-            
-            # 기존 캔들 테이블
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS kline_1m (
-                timestamp BIGINT PRIMARY KEY,
-                open FLOAT,
-                high FLOAT,
-                low FLOAT,
-                close FLOAT,
-                volume FLOAT,
-                quote_volume FLOAT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """)
-            
-            # 시장 지표 테이블 추가
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS market_indicators (
-                timestamp BIGINT PRIMARY KEY,
-                open_interest FLOAT,
-                long_ratio FLOAT,
-                short_ratio FLOAT,
-                long_short_ratio FLOAT,
-                oi_slope FLOAT,
-                ls_ratio_slope FLOAT,
-                ls_ratio_acceleration FLOAT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """)
-            
-            # 거래 기록 테이블 추가
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS trade_history (
-                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                timestamp BIGINT,
-                symbol VARCHAR(20),
-                side VARCHAR(10),
-                size FLOAT,
-                entry_price FLOAT,
-                exit_price FLOAT,
-                pnl FLOAT,
-                pnl_percentage FLOAT,
-                leverage INT,
-                trade_type VARCHAR(20),
-                entry_type VARCHAR(20),
-                exit_reason VARCHAR(50),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """)
-            
-            db.commit()
-            cursor.close()
-            return db
-            
+            await self._setup_database()
         except Exception as e:
-            logger.error(f"Database connection error: {e}")
+            logger.error(f"Failed to initialize database pool: {e}")
             raise
+    
+    async def _setup_database(self):
+        """데이터베이스 및 테이블 설정"""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                # 기존 캔들 테이블
+                await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS kline_1m (
+                    timestamp BIGINT PRIMARY KEY,
+                    open FLOAT,
+                    high FLOAT,
+                    low FLOAT,
+                    close FLOAT,
+                    volume FLOAT,
+                    quote_volume FLOAT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
+                await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS market_sentiment_data (
+                    timestamp BIGINT,
+                    symbol VARCHAR(20),
+                    open_interest FLOAT DEFAULT 0,
+                    oi_rsi FLOAT DEFAULT 50,
+                    oi_slope FLOAT DEFAULT 0,
+                    oi_change_percent FLOAT DEFAULT 0,
+                    long_ratio FLOAT DEFAULT 0,
+                    short_ratio FLOAT DEFAULT 0,
+                    ls_ratio_slope FLOAT DEFAULT 0,
+                    ls_ratio_acceleration FLOAT DEFAULT 0,
+                    PRIMARY KEY (timestamp, symbol)
+                )
+                """)
+                
+                # 거래 기록 테이블
+                await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS trade_history (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    timestamp BIGINT,
+                    symbol VARCHAR(20),
+                    side VARCHAR(10),
+                    size FLOAT,
+                    entry_price FLOAT,
+                    exit_price FLOAT,
+                    pnl FLOAT,
+                    pnl_percentage FLOAT,
+                    leverage INT,
+                    trade_type VARCHAR(20),
+                    entry_type VARCHAR(20),
+                    exit_reason VARCHAR(50),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
 
-    def reconnect(self):
-        """DB 재연결"""
+    async def store_candle(self, candle: Candle):
+        """단일 캔들 데이터 비동기 저장"""
         try:
-            if not self.db.is_connected():
-                self.db = self._setup_database()
-        except Exception as e:
-            logger.error(f"Database reconnection error: {e}")
-            raise
-
-    def store_candle(self, candle: Candle):
-        """단일 캔들 데이터 저장"""
-        try:
-            self.reconnect()
-            cursor = self.db.cursor()
-            
-            cursor.execute("""
-                INSERT INTO kline_1m 
-                (timestamp, open, high, low, close, volume, quote_volume)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                open=%s, high=%s, low=%s, close=%s, volume=%s, quote_volume=%s
-            """, (
-                candle.timestamp,
-                candle.open,
-                candle.high,
-                candle.low,
-                candle.close,
-                candle.volume,
-                candle.quote_volume,
-                candle.open,
-                candle.high,
-                candle.low,
-                candle.close,
-                candle.volume,
-                candle.quote_volume
-            ))
-            
-            self.db.commit()
-            cursor.close()
-            
+            async with self.pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("""
+                        INSERT INTO kline_1m 
+                        (timestamp, open, high, low, close, volume, quote_volume)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                        open=%s, high=%s, low=%s, close=%s, volume=%s, quote_volume=%s
+                    """, (
+                        candle.timestamp,
+                        candle.open,
+                        candle.high,
+                        candle.low,
+                        candle.close,
+                        candle.volume,
+                        candle.quote_volume,
+                        candle.open,
+                        candle.high,
+                        candle.low,
+                        candle.close,
+                        candle.volume,
+                        candle.quote_volume
+                    ))
+                    
         except Exception as e:
             logger.error(f"Error storing candle data: {e}")
-            self.db.rollback()
+            raise
 
-    def get_recent_candles(self, limit: int = 200) -> List[Candle]:
-        """최근 캔들 데이터 조회"""
+    async def get_recent_candles(self, limit: int = 200) -> List[Candle]:
+        """최근 캔들 데이터 비동기 조회"""
         try:
-            self.reconnect()
-            cursor = self.db.cursor()
-            
-            cursor.execute("""
-                SELECT timestamp, open, high, low, close, volume, quote_volume
-                FROM kline_1m
-                ORDER BY timestamp DESC
-                LIMIT %s
-            """, (limit,))
-            
-            rows = cursor.fetchall()
-            cursor.close()
-            
-            return [
-                Candle(
-                    timestamp=row[0],
-                    open=float(row[1]),
-                    high=float(row[2]),
-                    low=float(row[3]),
-                    close=float(row[4]),
-                    volume=float(row[5]),
-                    quote_volume=float(row[6]) if row[6] else None
-                )
-                for row in rows
-            ]
-            
+            async with self.pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("""
+                        SELECT timestamp, open, high, low, close, volume, quote_volume
+                        FROM kline_1m
+                        ORDER BY timestamp DESC
+                        LIMIT %s
+                    """, (limit,))
+                    
+                    rows = await cursor.fetchall()
+                    
+                    return [
+                        Candle(
+                            timestamp=row[0],
+                            open=float(row[1]),
+                            high=float(row[2]),
+                            low=float(row[3]),
+                            close=float(row[4]),
+                            volume=float(row[5]),
+                            quote_volume=float(row[6]) if row[6] else None
+                        )
+                        for row in rows
+                    ]
+                    
         except Exception as e:
             logger.error(f"Error fetching recent candles: {e}")
             return []
 
-    def store_initial_candles(self, candles: List[Dict]):
-        """초기 캔들 데이터 일괄 저장"""
+    async def store_initial_candles(self, candles: List[Dict]):
+        """초기 캔들 데이터 일괄 비동기 저장"""
         try:
-            self.reconnect()
-            cursor = self.db.cursor()
-            
-            for candle_data in candles:
-                cursor.execute("""
-                    INSERT INTO kline_1m 
-                    (timestamp, open, high, low, close, volume, quote_volume)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                    open=%s, high=%s, low=%s, close=%s, volume=%s, quote_volume=%s
-                """, (
-                    int(candle_data[0]),     # timestamp
-                    float(candle_data[1]),   # open
-                    float(candle_data[2]),   # high
-                    float(candle_data[3]),   # low
-                    float(candle_data[4]),   # close
-                    float(candle_data[5]),   # volume
-                    float(candle_data[6]),   # quote_volume
-                    float(candle_data[1]),   # open
-                    float(candle_data[2]),   # high
-                    float(candle_data[3]),   # low
-                    float(candle_data[4]),   # close
-                    float(candle_data[5]),   # volume
-                    float(candle_data[6])    # quote_volume
-                ))
-            
-            self.db.commit()
-            cursor.close()
+            async with self.pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    for candle_data in candles:
+                        await cursor.execute("""
+                            INSERT INTO kline_1m 
+                            (timestamp, open, high, low, close, volume, quote_volume)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                            open=%s, high=%s, low=%s, close=%s, volume=%s, quote_volume=%s
+                        """, (
+                            int(candle_data[0]),
+                            float(candle_data[1]),
+                            float(candle_data[2]),
+                            float(candle_data[3]),
+                            float(candle_data[4]),
+                            float(candle_data[5]),
+                            float(candle_data[6]),
+                            float(candle_data[1]),
+                            float(candle_data[2]),
+                            float(candle_data[3]),
+                            float(candle_data[4]),
+                            float(candle_data[5]),
+                            float(candle_data[6])
+                        ))
+                        
             logger.info(f"Successfully stored {len(candles)} initial candles")
             
         except Exception as e:
             logger.error(f"Error storing initial candles: {e}")
-            self.db.rollback()
+            raise
 
-
-    def store_market_indicators(self, timestamp: int, indicators: dict):
-        """시장 지표 저장"""
+    async def store_market_indicators(self, timestamp: int, indicators: dict):
+        """시장 지표 비동기 저장"""
         try:
-            self.reconnect()
-            cursor = self.db.cursor()
-            
-            cursor.execute("""
-                INSERT INTO market_indicators 
-                (timestamp, open_interest, long_ratio, short_ratio, long_short_ratio,
-                oi_slope, ls_ratio_slope, ls_ratio_acceleration)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                open_interest=%s, long_ratio=%s, short_ratio=%s, long_short_ratio=%s,
-                oi_slope=%s, ls_ratio_slope=%s, ls_ratio_acceleration=%s
-            """, (
-                timestamp,
-                indicators['open_interest'],
-                indicators['long_ratio'],
-                indicators['short_ratio'],
-                indicators['long_short_ratio'],
-                indicators['oi_slope'],
-                indicators['ls_ratio_slope'],
-                indicators['ls_ratio_acceleration'],
-                indicators['open_interest'],
-                indicators['long_ratio'],
-                indicators['short_ratio'],
-                indicators['long_short_ratio'],
-                indicators['oi_slope'],
-                indicators['ls_ratio_slope'],
-                indicators['ls_ratio_acceleration']
-            ))
-            
-            self.db.commit()
-            cursor.close()
-            
+            async with self.pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("""
+                        INSERT INTO market_sentiment_data 
+                        (timestamp, symbol, open_interest, oi_rsi, oi_slope, oi_change_percent,
+                        long_ratio, short_ratio, ls_ratio_slope, ls_ratio_acceleration)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                        open_interest=%s, oi_rsi=%s, oi_slope=%s, oi_change_percent=%s,
+                        long_ratio=%s, short_ratio=%s, ls_ratio_slope=%s, ls_ratio_acceleration=%s
+                    """, (
+                        timestamp,
+                        'BTCUSDT',  # 현재는 BTCUSDT만 사용
+                        indicators.get('open_interest', 0.0),
+                        indicators.get('oi_rsi', 0.0),
+                        indicators.get('oi_slope', 0.0),
+                        indicators.get('oi_change_percent', 0.0),
+                        indicators.get('long_ratio', 0.0),
+                        indicators.get('short_ratio', 0.0),
+                        indicators.get('ls_ratio_slope', 0.0),
+                        indicators.get('ls_ratio_acceleration', 0.0),
+                        # UPDATE 문을 위한 값 반복
+                        indicators.get('open_interest', 0.0),
+                        indicators.get('oi_rsi', 0.0),
+                        indicators.get('oi_slope', 0.0),
+                        indicators.get('oi_change_percent', 0.0),
+                        indicators.get('long_ratio', 0.0),
+                        indicators.get('short_ratio', 0.0),
+                        indicators.get('ls_ratio_slope', 0.0),
+                        indicators.get('ls_ratio_acceleration', 0.0)
+                    ))
+                    
+            logger.debug(f"Successfully stored market indicators for timestamp {timestamp}")
+                    
         except Exception as e:
             logger.error(f"Error storing market indicators: {e}")
-            self.db.rollback()
+            raise
 
-    def store_trade(self, trade_data: dict):
-        """거래 기록 저장"""
+    async def store_trade(self, trade_data: dict):
+        """거래 기록 비동기 저장"""
         try:
-            self.reconnect()
-            cursor = self.db.cursor()
-            
-            cursor.execute("""
-                INSERT INTO trade_history 
-                (timestamp, symbol, side, size, entry_price, exit_price,
-                pnl, pnl_percentage, leverage, trade_type, entry_type, exit_reason)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                trade_data['timestamp'],
-                trade_data['symbol'],
-                trade_data['side'],
-                trade_data['size'],
-                trade_data['entry_price'],
-                trade_data['exit_price'],
-                trade_data['pnl'],
-                trade_data['pnl_percentage'],
-                trade_data['leverage'],
-                trade_data['trade_type'],
-                trade_data['entry_type'],
-                trade_data['exit_reason']
-            ))
-            
-            self.db.commit()
-            cursor.close()
-            
+            async with self.pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("""
+                        INSERT INTO trade_history 
+                        (timestamp, symbol, side, size, entry_price, exit_price,
+                        pnl, pnl_percentage, leverage, trade_type, entry_type, exit_reason)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        trade_data['timestamp'],
+                        trade_data['symbol'],
+                        trade_data['side'],
+                        trade_data['size'],
+                        trade_data['entry_price'],
+                        trade_data['exit_price'],
+                        trade_data['pnl'],
+                        trade_data['pnl_percentage'],
+                        trade_data['leverage'],
+                        trade_data['trade_type'],
+                        trade_data['entry_type'],
+                        trade_data['exit_reason']
+                    ))
+                    
         except Exception as e:
             logger.error(f"Error storing trade history: {e}")
-            self.db.rollback()
+            raise
+
+    async def close(self):
+        """연결 풀 종료"""
+        if self.pool is not None:
+            self.pool.close()
+            await self.pool.wait_closed()

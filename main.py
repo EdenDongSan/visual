@@ -50,6 +50,11 @@ class TradingBot:
         self.is_running = False
         self.tasks = []
         self._cleanup_done = asyncio.Event()
+    
+    async def setup(self):
+        """초기 설정 비동기 수행"""
+        # DB 초기화
+        await self.db_manager.initialize()
 
     async def cleanup(self):
         """프로그램 종료 시 정리 작업 수행"""
@@ -86,6 +91,9 @@ class TradingBot:
         """트레이딩 봇 시작"""
         try:
             self.is_running = True
+
+            # 초기 설정 수행
+            await self.setup()
             
             # 웹소켓 연결
             await self.ws.connect()

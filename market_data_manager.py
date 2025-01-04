@@ -48,7 +48,7 @@ class MarketDataManager:
         """초기 캐시 구성"""
         try:
             logger.info("Starting cache initialization from DB...")
-            candles = self.db_manager.get_recent_candles(lookback_minutes)
+            candles = await self.db_manager.get_recent_candles(lookback_minutes)
             
             for candle in candles:
                 self.candles_cache[candle.timestamp] = candle
@@ -67,7 +67,7 @@ class MarketDataManager:
         self.candles_cache[candle.timestamp] = candle
         
         # DB에 저장
-        self.db_manager.store_candle(candle)
+        await self.db_manager.store_candle(candle)
 
         # 캐시 크기 관리
         if len(self.candles_cache) > 200:
@@ -620,33 +620,50 @@ class MarketDataManager:
                 'volatility': 'normal',
                 'warning': False
             }
-    
-    async def store_market_indicators(self):
-        """시장 지표 저장"""
+        
+    async def store_market_sentiment(self):
+        """시장 지표 계산 및 저장 (20초 간격)"""
         try:
-            # 지표 계산
-            market_indicators = self.calculate_market_indicators()
+            current_time = int(time.time())
             
-            if not market_indicators:
+            # 마지막 저장 시간 체크
+            if not hasattr(self, '_last_sentiment_store_time'):
+                self._last_sentiment_store_time = 0
+                
+            # 20초가 지나지 않았으면 저장하지 않음
+            if current_time - self._last_sentiment_store_time < 20:
                 return
-
-            # 현재 타임스탬프
-            current_time = int(time.time() * 1000)
-
-            # 데이터 구성
+                
+            # OI 관련 지표 계산
+            oi_indicators = self.calculate_oi_indicators()
+            
+            # L/S 비율 관련 지표
+            ratios = self.position_ratio_cache[-1] if self.position_ratio_cache else {
+                'long_ratio': 0.0,
+                'short_ratio': 0.0
+            }
+            
+            # Market indicators 계산
+            market_inds = self.calculate_market_indicators()
+            
+            # 저장할 데이터 구성
             indicators_data = {
-                'timestamp': current_time,
-                'open_interest': market_indicators.get('oi_slope', 0.0),
-                'long_ratio': market_indicators.get('current_long_ratio', 0.0),
-                'short_ratio': market_indicators.get('current_short_ratio', 0.0),
-                'long_short_ratio': market_indicators.get('current_ls_ratio', 1.0),
-                'oi_slope': market_indicators.get('oi_slope', 0.0),
-                'ls_ratio_slope': market_indicators.get('ls_ratio_slope', 0.0),
-                'ls_ratio_acceleration': market_indicators.get('ls_ratio_acceleration', 0.0)
+                'open_interest': oi_indicators.get('current_oi', 0.0),
+                'oi_rsi': oi_indicators.get('oi_rsi', 0.0),
+                'oi_slope': oi_indicators.get('slope', 0.0),
+                'oi_change_percent': oi_indicators.get('recent_change_pct', 0.0),
+                'long_ratio': ratios.get('long_ratio', 0.0),
+                'short_ratio': ratios.get('short_ratio', 0.0),
+                'ls_ratio_slope': market_inds.get('ls_ratio_slope', 0.0),
+                'ls_ratio_acceleration': market_inds.get('ls_ratio_acceleration', 0.0)
             }
 
-            # DB 저장
-            self.db_manager.store_market_indicators(current_time, indicators_data)
-                
+            # DB 저장 (밀리초 단위로 변환)
+            await self.db_manager.store_market_indicators(current_time * 1000, indicators_data)
+            
+            # 저장 시간 업데이트
+            self._last_sentiment_store_time = current_time
+            logger.info(f"Market sentiment data stored at {current_time}")
+            
         except Exception as e:
-            logger.error(f"Error storing market indicators: {e}")
+            logger.error(f"Error storing market sentiment: {e}")

@@ -247,7 +247,7 @@ class TradingStrategy:
                     'exit_reason': ''  # 진입 시에는 빈 문자열
                 }
                 
-                self.market_data.db_manager.store_trade(trade_data)
+                await self.market_data.db_manager.store_trade(trade_data)
                 logger.info(f"Trade entry recorded: {side} {total_size} @ {entry_price}")
                 
                 self.in_position = True
@@ -295,7 +295,7 @@ class TradingStrategy:
                     'exit_reason': reason
                 }
                 
-                self.market_data.db_manager.store_trade(trade_data)
+                await self.market_data.db_manager.store_trade(trade_data)
                 logger.info(f"Position fully closed with market order. Reason: {reason}")
                 logger.info(f"Trade exit recorded - PnL: {pnl:.2f} USDT ({pnl_percentage:.2f}%)")
                 
@@ -332,17 +332,32 @@ class TradingStrategy:
 
     async def run(self):
         """전략 실행 메인 루프"""
-        logger.info("Starting trading strategy")
-        while True:
-            try:
-                await self.market_data.update_position_ratio("BTCUSDT")
-                await self.market_data.update_open_interest("BTCUSDT")
-                await self.market_data.store_market_indicators()
-                await self._process_trading_logic()
+        try:
+            logger.info("Starting trading strategy")
+            
+            # 시작할 때 한 번만 미체결 주문 취소
+            await self.order_executor.cancel_all_symbol_orders("BTCUSDT")
+            logger.info("Initial cleanup of pending orders completed")
+            
+            while True:
+                try:
+                    # 시장 데이터 업데이트 및 저장
+                    await self.market_data.update_position_ratio("BTCUSDT")
+                    await self.market_data.update_open_interest("BTCUSDT")
+                    await self.market_data.store_market_sentiment()
+                    
+                    # 트레이딩 로직 실행
+                    await self._process_trading_logic()
+                    
+                except Exception as e:
+                    logger.error(f"Error in trading loop: {e}")
+                
                 await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"Error in main loop: {e}")
-                await asyncio.sleep(1)
+                
+        except Exception as e:
+            logger.error(f"Fatal error in strategy: {e}")
+        finally:
+            logger.info("Trading strategy stopped")
 
     async def _process_trading_logic(self):
         """트레이딩 로직 처리"""

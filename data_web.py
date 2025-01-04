@@ -15,7 +15,7 @@ class BitgetWebsocket:
         self.ws = None
         self.api = api
         self.market_data = market_data
-        self.db_manager = DatabaseManager()  # 추가
+        self.db_manager = DatabaseManager()  
         self.connected = False
         self.reconnecting = False
         self.subscriptions = []
@@ -74,7 +74,7 @@ class BitgetWebsocket:
                 candles_data = response.get('data', [])
                 
                 # 직접 DatabaseManager의 메서드 호출
-                self.db_manager.store_initial_candles(candles_data)
+                await self.db_manager.store_initial_candles(candles_data)
                 logger.info(f"Successfully stored {len(candles_data)} historical candles")
             else:
                 logger.error(f"Failed to fetch historical candles: {response}")
