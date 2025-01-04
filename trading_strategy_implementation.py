@@ -211,12 +211,19 @@ class TradingStrategy:
         try:
             total_size = await self.calculate_position_size(current_price)
             
-            entry_price = current_price
-            # 롱/숏에 따른 스탑로스 가격만 설정
+            # 롱/숏에 따른 진입가격과 스탑로스 설정
             if side == "long":
+                # 롱은 현재가 + 0.1달러로 주문
+                entry_price = current_price + 0.1
                 stop_loss_price = entry_price * (1 - self.config.stop_loss_pct/100)
             else:  # short
+                # 숏은 현재가 - 0.1달러로 주문
+                entry_price = current_price - 0.1
                 stop_loss_price = entry_price * (1 + self.config.stop_loss_pct/100)
+            
+            # 가격을 0.1 단위로 반올림
+            entry_price = round(entry_price * 10) / 10
+            stop_loss_price = round(stop_loss_price * 10) / 10
             
             success = await self.order_executor.open_position(
                 symbol="BTCUSDT",

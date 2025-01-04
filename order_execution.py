@@ -25,9 +25,9 @@ class OrderExecutor:
         self.api = api
         self.positions: Dict[str, Position] = {}
         self.pending_orders: Dict[str, Dict] = {}  # 미체결 주문 관리
-        self.order_check_interval = 10  # 주문 체결 확인 간격 (초)
+        self.order_check_interval = 1  # 주문 체결 확인 간격 (초)
         
-    async def wait_for_order_fill(self, symbol: str, order_id: str, timeout: int = 30) -> bool:  #open_position함수에서 호출당한다. filled 즉 채결된 상태가 되면 true 반환. 캔슬되거나 타임아웃내에 filled 상태가 되지않으면 false 반환.
+    async def wait_for_order_fill(self, symbol: str, order_id: str, timeout: int = 1) -> bool:  #open_position함수에서 호출당한다. filled 즉 채결된 상태가 되면 true 반환. 캔슬되거나 타임아웃내에 filled 상태가 되지않으면 false 반환.
         """주문 체결 대기"""
         start_time = time.time()
         logger.info(f"Waiting for order {order_id} to fill (timeout: {timeout}s)")
@@ -48,11 +48,11 @@ class OrderExecutor:
                         logger.warning(f"Order {order_id} was cancelled")
                         return False
                         
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.2)
                 
             except Exception as e:
                 logger.error(f"Error checking order status: {e}")
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.2)
                 
         logger.warning(f"Order {order_id} fill timeout after {timeout}s")
         return False
