@@ -30,6 +30,7 @@ class DatabaseManager:
         if not DatabaseManager._initialized:
             self.pool = None
             DatabaseManager._initialized = True
+            self.logger = logging.getLogger("bitget_api")
     
     async def initialize(self):
         """비동기 DB 풀 초기화"""
@@ -127,9 +128,10 @@ class DatabaseManager:
                     ))
                     
         except Exception as e:
-            logger.error(f"Error storing candle data: {e}")
+            self.logger.error(f"Error storing candle: {e}", 
+                  extra={'action': 'store_candle'})
             raise
-
+        
     async def get_recent_candles(self, limit: int = 200) -> List[Candle]:
         """최근 캔들 데이터 비동기 조회"""
         try:

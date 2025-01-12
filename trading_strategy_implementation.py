@@ -70,7 +70,7 @@ class TradingStrategy:
             price_rising = price_change > 0
             
             # L/S 비율 조건
-            ratio_trending_up = (ls_ratio_slope > self.config.min_slope and 
+            ratio_trending_up = (ls_ratio_slope > self.config.min_slope or 
                             ls_ratio_acceleration > self.config.acceleration_threshold)
             
             # OI RSI 과매수 확인 (롱 진입 조건으로 변경)
@@ -124,7 +124,7 @@ class TradingStrategy:
             price_falling = price_change < 0
             
             # L/S 비율 조건
-            ratio_trending_down = (ls_ratio_slope < -self.config.min_slope and 
+            ratio_trending_down = (ls_ratio_slope < -self.config.min_slope or 
                                 ls_ratio_acceleration < -self.config.acceleration_threshold)
             
             # OI RSI 과매도 확인 (숏 진입 조건으로 변경)
@@ -184,23 +184,6 @@ class TradingStrategy:
                 (position.side == 'short' and oi_rsi >= 80):
                 logger.info(f"OI RSI condition met for closing: {oi_rsi}")
                 return True, "oi_rsi_condition"
-            
-            # 3. L/S 비율 반전 확인
-            ls_ratio_slope = market_indicators.get('ls_ratio_slope', 0)
-            ls_ratio_acceleration = market_indicators.get('ls_ratio_acceleration', 0)
-            
-            if position.side == 'long':
-                ratio_reversal = (ls_ratio_slope < -self.config.min_slope and 
-                                ls_ratio_acceleration < -self.config.acceleration_threshold)
-            else:
-                ratio_reversal = (ls_ratio_slope > self.config.min_slope and 
-                                ls_ratio_acceleration > self.config.acceleration_threshold)
-            
-            if ratio_reversal:
-                logger.info("Trend reversal detected")
-                return True, "trend_reversal"
-            
-            return False, ""
         
         except Exception as e:
             logger.error(f"Error in should_close_position: {e}")
@@ -392,6 +375,8 @@ class TradingStrategy:
             if not current_price:
                 return
 
+            # === 거래 관련 로직 시작 (임시 비활성화) ===
+            """
             # 포지션이 있는 경우 - 청산 조건만 확인
             if position and position.size > 0:
                 should_close, close_reason = await self.should_close_position(
@@ -401,7 +386,7 @@ class TradingStrategy:
                 if should_close:
                     await self.execute_close(position, close_reason)
                     
-           # 포지션이 없는 경우에만 진입 조건 확인
+            # 포지션이 없는 경우에만 진입 조건 확인
             elif not self.in_position and (current_time - self.last_trade_time) >= self.min_trade_interval:
                 # 레버리지 동적 조정
                 volatility = self.market_data.calculate_atr(period=14)
@@ -417,6 +402,12 @@ class TradingStrategy:
                     await self.execute_entry("long", current_price)
                 elif short_condition:
                     await self.execute_entry("short", current_price)
-            
+            """
+            # === 거래 관련 로직 끝 ===
+            # 데이터 수집 모니터링을 위한 로그
+            if not hasattr(self, '_last_data_log_time') or current_time - self._last_data_log_time >= 60:
+                self._last_data_log_time = current_time
+                logger.info(f"Data collection active - Price: {current_price}")
+
         except Exception as e:
             logger.error(f"Error in trading logic: {e}")

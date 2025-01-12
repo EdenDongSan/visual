@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional, List
 from datetime import datetime
+import logging
 
 @dataclass
 class MarketData:

@@ -20,30 +20,31 @@ class BitgetWebsocket:
         self.reconnecting = False
         self.subscriptions = []
         self._processing = False
+        self.logger = logging.getLogger("bitget_api")
    
     async def connect(self):
-       """WebSocket 연결 설정"""
-       while not self.connected and not self.reconnecting:
-           try:
-               self.reconnecting = True
-               logger.info("Attempting to connect to WebSocket...")
-               self.ws = await websockets.connect(self.WS_URL)
-               self.connected = True
-               self.reconnecting = False
-               logger.info("WebSocket connected successfully")
-               
-               # 기존 구독 복구
-               for symbol in self.subscriptions:
-                   await self.subscribe_kline(symbol)
-                   
-               asyncio.create_task(self._keep_alive())
-               return True
-           except Exception as e:
-               logger.error(f"WebSocket connection failed: {e}")
-               await asyncio.sleep(5)
-           finally:
-               self.reconnecting = False
-       return False
+        """WebSocket 연결 설정"""
+        while not self.connected and not self.reconnecting:
+            try:
+                self.reconnecting = True
+                self.logger.info("WebSocket connecting...")
+                
+                self.ws = await websockets.connect(self.WS_URL)
+                self.connected = True
+                self.reconnecting = False
+                
+                self.logger.info("WebSocket connected successfully")
+                
+                asyncio.create_task(self._keep_alive())
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"WebSocket connection error: {e}", 
+                  extra={'action': 'websocket_connect'})
+                await asyncio.sleep(5)
+            finally:
+                self.reconnecting = False
+        return False
 
     async def disconnect(self):
         """WebSocket 연결 종료"""

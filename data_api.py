@@ -5,20 +5,22 @@ import hashlib
 import time
 import logging
 import asyncio
-from logging_setup import APILogger
 import json
 from models import Position
 from typing import Optional, Dict, List
 from urllib.parse import urlencode
+from utils import LogControlMixin  # 이 줄을 추가
+
 
 logger = logging.getLogger(__name__)
 
-class BitgetAPI:
+class BitgetAPI(LogControlMixin):
     def __init__(self, api_key: str, secret_key: str, passphrase: str):
+        super().__init__()  # LogControlMixin 초기화
         self.API_KEY = api_key
         self.SECRET_KEY = secret_key
         self.PASSPHRASE = passphrase
-        self.api_logger = APILogger()
+        self.logger = logging.getLogger("bitget_api")
         self.BASE_URL = "https://api.bitget.com"
         self.session = None
         
@@ -63,7 +65,6 @@ class BitgetAPI:
         }
 
     async def _request(self, method: str, endpoint: str, params: dict = None, data: dict = None) -> Optional[dict]:
-        """통합된 비동기 HTTP 요청 처리"""
         if self.session is None:
             self.session = aiohttp.ClientSession()
 
@@ -89,30 +90,18 @@ class BitgetAPI:
             ) as response:
                 response_data = await response.json()
                 
-                # 요청 URL과 상태 코드를 키로 사용
-                request_key = f"{method} {url} - {response.status}"
-                current_time = int(time.time())
-                
-                # 마지막 로깅 시간 확인 (최소 60초 간격)
-                if not hasattr(self, '_last_request_log') or not hasattr(self, '_last_request_time'):
-                    self._last_request_log = {}
-                    self._last_request_time = {}
+                # API 요청 로그는 엔드포인트별로 1분에 한 번만 기록
+                if self.should_log(f'api_request_{endpoint}'):
+                    self.logger.info(f"{method} request to {url} completed with status {response.status}", 
+                                   extra={'response': response_data})
 
-                if (request_key not in self._last_request_log or 
-                    current_time - self._last_request_time.get(request_key, 0) >= 60):
-                    logger.info(f"API {method} {url} - Status: {response.status}")
-                    self._last_request_log[request_key] = response.status
-                    self._last_request_time[request_key] = current_time
-
-                if response.status != 200:
-                    logger.error(f"API Error: {response_data}")
-                    
                 return response_data
 
         except Exception as e:
-            logger.error(f"Request error: {e}")
+            self.logger.error(f"API request error: {e}", 
+                  extra={'method': method, 'url': url})
             return None
-        
+            
     async def get_historical_candles(self, symbol: str) -> Optional[dict]:             # 시작할 때 캐시를 api를 활용해서 받아오는 역할. 200개의 1분봉. data_web에서 호출당한다.
         """프로그램 시작 시점 기준 과거 200개의 1분봉 데이터 조회"""
         try:

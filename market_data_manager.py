@@ -6,20 +6,23 @@ from database_manager import DatabaseManager, Candle
 from data_api import BitgetAPI
 import time
 import math
+from utils import LogControlMixin
 
 logger = logging.getLogger(__name__)
 
-class MarketDataManager:
+class MarketDataManager(LogControlMixin):
     def __init__(self, api: BitgetAPI):
+        super().__init__()  # LogControlMixin 초기화
         self.api = api
         self.db_manager = DatabaseManager()
         self.latest_candle: Optional[Candle] = None
         self.candles_cache: Dict[int, Candle] = {}
+        self.logger = logging.getLogger("bitget_api")
         
         # OI와 L/S 데이터 캐시 수정
         self.position_ratio_cache: List[Dict[str, float]] = []  
         self.oi_cache: List[Tuple[int, float]] = []  
-        self.max_oi_cache_size = 50  # 캐시 최대 크기 설정
+        self.max_oi_cache_size = 42  # 캐시 최대 크기 설정
         self.last_saved_ratio = None  # 마지막으로 저장된 L/S 비율
         self.last_saved_oi = None  # 마지막으로 저장된 OI 값
         
@@ -62,17 +65,25 @@ class MarketDataManager:
             logger.error(f"Error initializing cache from DB: {e}")
 
     async def update_latest_candle(self, candle: Candle) -> None:
-        """새로운 캔들 데이터로 캐시 업데이트"""
-        self.latest_candle = candle
-        self.candles_cache[candle.timestamp] = candle
-        
-        # DB에 저장
-        await self.db_manager.store_candle(candle)
+        try:
+            self.latest_candle = candle
+            self.candles_cache[candle.timestamp] = candle
+            
+            # 1분마다 한 번씩만 로깅
+            if self.should_log('candle_update'):
+                self.logger.info(f"New candle: timestamp={candle.timestamp}, close={candle.close}, volume={candle.volume}")
+            
+            # DB에 저장
+            await self.db_manager.store_candle(candle)
 
-        # 캐시 크기 관리
-        if len(self.candles_cache) > 200:
-            oldest_timestamp = min(self.candles_cache.keys())
-            del self.candles_cache[oldest_timestamp]
+            # 캐시 크기 관리
+            if len(self.candles_cache) > 200:
+                oldest_timestamp = min(self.candles_cache.keys())
+                del self.candles_cache[oldest_timestamp]
+                
+        except Exception as e:
+            self.logger.error(f"Error updating latest candle: {e}", 
+                  extra={'action': 'update_latest_candle'})
 
     def _has_significant_change(self, new_value: float, old_value: float, threshold: float) -> bool:
         """값의 유의미한 변화 여부 확인"""
@@ -483,12 +494,12 @@ class MarketDataManager:
             z_score = float((current_oi - oi_mean) / oi_std) if oi_std != 0 else 0
             is_anomaly = abs(z_score) > 2
             
-            # RSI 계산 (OI 기반)
-            if len(oi_changes) >= 14:
+            # RSI 계산 (전체 캐시된 OI 데이터 사용)
+            if len(oi_changes) > 0:
                 gains = np.where(oi_changes > 0, oi_changes, 0)
                 losses = np.where(oi_changes < 0, -oi_changes, 0)
-                avg_gain = np.mean(gains[-14:])
-                avg_loss = np.mean(losses[-14:])
+                avg_gain = np.mean(gains)
+                avg_loss = np.mean(losses)
                 if avg_loss != 0:
                     rs = avg_gain / avg_loss
                     oi_rsi = 100 - (100 / (1 + rs))
